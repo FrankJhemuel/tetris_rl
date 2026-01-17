@@ -1,21 +1,22 @@
+import cv2
 import gymnasium as gym
+import numpy as np
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-import random
 from collections import deque
 import os
-import copy
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-
-from tetris_gymnasium.envs.tetris import Tetris
 import yaml
 
+from tetris_gymnasium.envs.tetris import Tetris
+from tetris_gymnasium.mappings.actions import ActionsMapping
+
 # ------------------------
-# Directories
+# Directories & Config
 # ------------------------
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -23,9 +24,6 @@ GRAPH_FILE = "tetris_training_graph.png"
 SAVE_EVERY = 100
 MAX_CHECKPOINTS = 10
 
-# ------------------------
-# Hyperparameters
-# ------------------------
 with open("hyperparams.yaml", "r") as f:
     config = yaml.safe_load(f)
 
@@ -39,11 +37,10 @@ memory_size = config["memory_size"]
 target_update_freq = config["target_update_freq"]
 num_episodes = config["num_episodes"]
 
-# ------------------------
-# Device
-# ------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+A = ActionsMapping()
 
 # ------------------------
 # DQN Network
@@ -55,15 +52,13 @@ class DQN(nn.Module):
             nn.Conv2d(input_shape[0], 32, 3, stride=1, padding=1),
             nn.ReLU(),
             nn.Conv2d(32, 64, 3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, stride=1, padding=1),
             nn.ReLU()
         )
         conv_out_size = 64 * input_shape[1] * input_shape[2]
         self.fc = nn.Sequential(
-            nn.Linear(conv_out_size, 512),
+            nn.Linear(conv_out_size, 256),
             nn.ReLU(),
-            nn.Linear(512, 1)  # single output: board evaluation
+            nn.Linear(256, 1)
         )
 
     def forward(self, x):
@@ -98,95 +93,71 @@ def piece_placed(prev_board, env):
     return not np.array_equal(prev_playable, curr_playable)
 
 def get_state_channels(env: Tetris) -> np.ndarray:
+    board = env.unwrapped.board.astype(np.float32)
+    return board[np.newaxis, :, :]
+
+def shape_reward(env, prev_board=None, info=None):
     env = env.unwrapped
-    board = env.board.astype(np.float32)
-    H, W = board.shape
-    state = np.zeros((3, H, W), dtype=np.float32)
-
-    # Current tetromino
-    state[0] = env.project_tetromino().astype(np.float32)
-
-    # Next tetromino
-    next_id = env.queue.get_queue()[0]
-    if next_id is not None:
-        next_tet = env.tetrominoes[next_id]
-        next_board = np.zeros_like(board)
-        next_board[:next_tet.matrix.shape[0], :next_tet.matrix.shape[1]] = next_tet.matrix
-        state[1] = next_board
-
-    # Hold tetromino
-    hold_list = env.holder.get_tetrominoes()
-    if hold_list:
-        hold_tet = hold_list[0]
-        hold_board = np.zeros_like(board)
-        hold_board[:hold_tet.matrix.shape[0], :hold_tet.matrix.shape[1]] = hold_tet.matrix
-        state[2] = hold_board
-
-    return state
-
-def shape_reward(env, prev_board=None):
-    """
-    Compute reward based on lines cleared, holes, and smoothness.
-    """
-    env = env.unwrapped
-    reward = 0.05  # survival reward
+    reward = 1.0  # base reward for placing a piece
     board = env.board.copy()
     H, W = board.shape
     playable_board = board[:H-4, 4:W-4]
     H_p, W_p = playable_board.shape
 
-    # Lines cleared
-    lines = env.lines_cleared
-    reward += lines * 15
+    # Reward for lines cleared
+    lines = info.get("lines_cleared", 0) if info else 0
+    reward += lines * 10  # lines are good
 
-    # Bonus for placing piece
-    if prev_board is not None and piece_placed(prev_board, env):
-        reward += 0.2
-
-    # Holes
+    # Holes and column heights
     holes = 0
-    for col in range(W_p):
-        found_block = False
-        for row in range(H_p):
-            if playable_board[row, col] > 0:
-                found_block = True
-            elif found_block and playable_board[row, col] == 0:
-                holes += 1
-
-    # Smoothness
     column_heights = []
     for c in range(W_p):
         col = playable_board[:, c]
+        found_block = False
+        for row in range(H_p):
+            if col[row] > 0:
+                found_block = True
+            elif found_block and col[row] == 0:
+                holes += 1
         filled_rows = np.where(col > 0)[0]
         height = H_p - filled_rows[0] if len(filled_rows) > 0 else 0
         column_heights.append(height)
-    smoothness = sum(abs(column_heights[i] - column_heights[i+1]) for i in range(W_p-1))
 
-    # Delta rewards
-    if prev_board is not None and piece_placed(prev_board, env):
+    smoothness = sum(abs(column_heights[i] - column_heights[i+1]) for i in range(W_p-1))
+    max_height = max(column_heights)
+
+    # Reward improvement over previous board
+    if prev_board is not None:
         prev_playable = prev_board[:H-4, 4:W-4]
         prev_holes = 0
-        for col in range(W_p):
-            found_block = False
-            for row in range(H_p):
-                if prev_playable[row, col] > 0:
-                    found_block = True
-                elif found_block and prev_playable[row, col] == 0:
-                    prev_holes += 1
-
         prev_column_heights = []
         for c in range(W_p):
             col = prev_playable[:, c]
+            found_block = False
+            for row in range(H_p):
+                if col[row] > 0:
+                    found_block = True
+                elif found_block and col[row] == 0:
+                    prev_holes += 1
             filled_rows = np.where(col > 0)[0]
             height = H_p - filled_rows[0] if len(filled_rows) > 0 else 0
             prev_column_heights.append(height)
-        prev_smoothness = sum(abs(prev_column_heights[i] - prev_column_heights[i+1]) for i in range(W_p-1))
 
-        delta_holes = np.clip(prev_holes - holes, -2.0, 2.0)
-        delta_smooth = np.clip(prev_smoothness - smoothness, -2.0, 2.0)
-        reward += delta_holes + delta_smooth
+        prev_smoothness = sum(abs(prev_column_heights[i] - prev_column_heights[i+1]) for i in range(W_p-1))
+        prev_max_height = max(prev_column_heights)
+
+        # Holes reward/penalty
+        reward += (prev_holes - holes) * 1.0  # fewer holes
+
+        # Smoothness reward/penalty
+        reward += (prev_smoothness - smoothness) * 0.5
+
+        # Height delta reward/penalty
+        delta_height = prev_max_height - max_height
+        reward += delta_height * 0.5  # positive if max height decreased, negative if increased
 
     return reward
+
 
 def save_moving_avg_graph(rewards_per_episode, window=50, filename="tetris_moving_avg.png"):
     rewards_array = np.array(rewards_per_episode)
@@ -223,10 +194,95 @@ def save_training_graph(rewards_per_episode, epsilon_history):
     plt.close(fig)
 
 # ------------------------
-# Networks and Replay
+# Helper functions from placement script
 # ------------------------
-dummy_state = env.unwrapped.board.astype(np.float32)
-state_dim = (1, *dummy_state.shape)  # 1 channel now
+def check_collision(board, piece, x, y):
+    H, W = board.shape
+    h, w = piece.shape
+    for py in range(h):
+        for px in range(w):
+            if piece[py, px]:
+                bx = x + px
+                by = y + py
+                if bx < 0 or bx >= W or by < 0 or by >= H:
+                    return True
+                if board[by, bx]:
+                    return True
+    return False
+
+def place_piece(board, piece, x, y):
+    new_board = board.copy()
+    h, w = piece.shape
+    for py in range(h):
+        for px in range(w):
+            if piece[py, px]:
+                new_board[y + py, x + px] = 1
+    return new_board
+
+def get_unique_rotations(tetromino):
+    rotations = []
+    seen = []
+    mat = tetromino.matrix.copy()
+    for _ in range(4):
+        non_empty_rows = np.any(mat, axis=1)
+        non_empty_cols = np.any(mat, axis=0)
+        trimmed = mat[non_empty_rows][:, non_empty_cols]
+        if not any(np.array_equal(trimmed, s) for s in seen):
+            seen.append(trimmed.copy())
+            rotations.append(trimmed.copy())
+        mat = np.rot90(mat, -1)
+    return rotations
+
+def get_all_board_states(env, tetro):
+    board = env.unwrapped.board.copy()
+    H, W = board.shape
+    rotations = get_unique_rotations(tetro)
+    results = []
+    for rot_id, piece in enumerate(rotations):
+        h, w = piece.shape
+        for x in range(W - w + 1):
+            y = 0
+            while not check_collision(board, piece, x, y):
+                y += 1
+            y -= 1
+            if y < 0:
+                continue
+            new_board = place_piece(board, piece, x, y)
+            results.append({
+                "rotation": rot_id,
+                "x": x,
+                "y": y,
+                "board": new_board,
+                "actions": compute_action_sequence(env, tetro, rot_id, x)
+            })
+    return results
+
+def compute_action_sequence(env, tetro, target_rot_id, target_x):
+    actions = []
+    rotations = get_unique_rotations(tetro)
+    curr_mat = tetro.matrix.copy()
+    curr_rot_id = 0
+    for i, r in enumerate(rotations):
+        if np.array_equal(curr_mat, r):
+            curr_rot_id = i
+            break
+    n_rot = (target_rot_id - curr_rot_id) % len(rotations)
+    for _ in range(n_rot):
+        actions.append(A.rotate_clockwise)
+    curr_x = env.unwrapped.x
+    dx = target_x - curr_x
+    if dx > 0:
+        actions += [A.move_right] * dx
+    elif dx < 0:
+        actions += [A.move_left] * (-dx)
+    actions.append(A.hard_drop)
+    return actions
+
+# ------------------------
+# Replay Memory & Networks
+# ------------------------
+dummy_state = np.array(env.unwrapped.board, dtype=np.float32)
+state_dim = (1, *dummy_state.shape)
 policy_net = DQN(state_dim).to(device)
 target_net = DQN(state_dim).to(device)
 target_net.load_state_dict(policy_net.state_dict())
@@ -255,122 +311,7 @@ def replay():
     optimizer.step()
 
 # ------------------------
-# Position Evaluation
-# ------------------------
-def simulate_swap(env):
-    """Return a copy of the unwrapped environment with the active tetromino swapped."""
-    temp_env = copy.deepcopy(env.unwrapped)
-    if not temp_env.has_swapped:
-        swapped = temp_env.holder.swap(temp_env.active_tetromino)
-        if swapped is not None:
-            temp_env.active_tetromino = swapped
-            temp_env.has_swapped = True
-    return temp_env
-
-def get_all_final_positions(env):
-    """Get all final positions (x, rotation, hold) for the current tetromino."""
-    env_unwrapped = env.unwrapped
-    positions = []
-
-    hold_options = [False]
-    if not env_unwrapped.has_swapped:
-        hold_options.append(True)
-
-    for hold in hold_options:
-        temp_env = copy.deepcopy(env_unwrapped)
-
-        if hold:
-            if not temp_env.has_swapped:
-                swapped = temp_env.holder.swap(temp_env.active_tetromino)
-                if swapped is None:
-                    continue
-                temp_env.active_tetromino = swapped
-                temp_env.has_swapped = True
-
-        if temp_env.active_tetromino is None:
-            continue
-
-        for rotation in range(4):
-            tet = temp_env.active_tetromino
-            for _ in range(rotation):
-                tet = temp_env.rotate(tet, clockwise=True)
-
-            if tet is None:
-                continue
-
-            tet_width = tet.matrix.shape[1]
-            for x in range(0, temp_env.width - tet_width + 1):
-                y = temp_env.y
-                while not temp_env.collision(tet, x, y + 1):
-                    y += 1
-                positions.append((x, rotation, hold))
-
-    return positions
-
-def evaluate_positions(env, policy_net):
-    env_unwrapped = env.unwrapped
-    positions = get_all_final_positions(env)
-    best_score = -float("inf")
-    best_move = None
-
-    for x, rotation, hold in positions:
-        temp_env = copy.deepcopy(env_unwrapped)
-        if hold:
-            swapped = temp_env.holder.swap(temp_env.active_tetromino)
-            if swapped is not None:
-                temp_env.active_tetromino = swapped
-                temp_env.has_swapped = True
-
-        tet = temp_env.active_tetromino
-        if tet is None:
-            continue
-        for _ in range(rotation):
-            tet = temp_env.rotate(tet, clockwise=True)
-        temp_env.active_tetromino = tet
-        temp_env.x = x
-
-        # Hard drop
-        temp_env.drop_active_tetromino()
-
-        # Get board after drop
-        board_obs = temp_env._get_obs()["board"]
-        board_tensor = torch.tensor(temp_env.unwrapped.board.astype(np.float32), dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device) # shape = (1, 1, H, W)
-
-
-        with torch.no_grad():
-            score = policy_net(board_tensor).item()
-
-        if score > best_score:
-            best_score = score
-            best_move = (x, rotation, hold)
-
-    return best_move
-
-def execute_position(env: Tetris, position):
-    x_target, rotation_target, hold = position
-    env_unwrapped = env.unwrapped
-
-    if hold:
-        env.swap()
-
-    # Rotate to target
-    current_rotation = 0
-    while current_rotation != rotation_target:
-        env.step(env_unwrapped.actions.rotate_clockwise)
-        current_rotation = (current_rotation + 1) % 4
-
-    # Move horizontally
-    while env_unwrapped.x < x_target:
-        env.step(env_unwrapped.actions.move_right)
-    while env_unwrapped.x > x_target:
-        env.step(env_unwrapped.actions.move_left)
-
-    # Hard drop
-    env.step(env_unwrapped.actions.hard_drop)
-
-
-# ------------------------
-# Training Loop
+# Main Training Loop
 # ------------------------
 if __name__ == "__main__":
     best_reward = -float("inf")
@@ -380,37 +321,49 @@ if __name__ == "__main__":
     try:
         for episode in range(num_episodes):
             obs, info = env.reset()
-            total_reward = 0
             terminated = False
+            total_reward = 0
             prev_board = env.unwrapped.board.copy()
 
             while not terminated:
-                # Evaluate all positions
-                best_pos = evaluate_positions(env, policy_net)
+                curr_tetro = env.unwrapped.active_tetromino
+                placements = get_all_board_states(env, curr_tetro)
 
-                # Execute best position
-                execute_position(env, best_pos)
+                # Convert boards to batch tensor
+                boards_batch = np.array([p["board"] for p in placements], dtype=np.float32)
+                boards_batch = torch.tensor(boards_batch[:, np.newaxis, :, :], dtype=torch.float32).to(device)
 
-                # Compute reward
-                reward = shape_reward(env, prev_board)
+                with torch.no_grad():
+                    q_values = policy_net(boards_batch).squeeze()
+
+                if random.random() < epsilon:
+                    chosen_idx = random.randint(0, len(placements)-1)
+                else:
+                    chosen_idx = torch.argmax(q_values).item()
+
+                chosen = placements[chosen_idx]
+
+                # Execute actions
+                for a in chosen["actions"]:
+                    if terminated:
+                        break
+                    obs, reward_step, terminated, truncated, info = env.step(a)
+                    env.render()
+                    cv2.waitKey(50)
+
+                reward = shape_reward(env, prev_board, info)
                 next_state = get_state_channels(env)
                 remember(get_state_channels(env), reward, next_state, terminated)
                 replay()
-
+                # print(reward)
                 total_reward += reward
                 prev_board = env.unwrapped.board.copy()
 
-                # Check termination
-                terminated = env.unwrapped.done
-
-            # Epsilon decay
             epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
-            # Update target network
             if (episode+1) % target_update_freq == 0:
                 target_net.load_state_dict(policy_net.state_dict())
 
-            # Checkpoints
             if (episode+1) % SAVE_EVERY == 0:
                 checkpoint_path = f"{CHECKPOINT_DIR}/tetris_dqn_ep{episode+1}.pth"
                 torch.save({
