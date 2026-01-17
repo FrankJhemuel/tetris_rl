@@ -58,13 +58,13 @@ def place_piece(board, piece, x, y):
 # Offsets to convert trimmed-x → env-x
 # Format: piece_index : [offset_per_rotation]
 X_OFFSETS = {
-    0: [0, -1],        # I (horizontal, vertical)
-    1: [0],           # O
-    2: [0, 0, 0, -1],  # T
-    3: [0, 0],        # S
-    4: [0, 0],        # Z
-    5: [3, 3, 3, 3],  # J
-    6: [3, 3, 3, 3],  # L
+    0: [0, -1],         # I (horizontal, vertical)
+    1: [0],             # O
+    2: [0, 0, 0, -1],   # T
+    3: [0, 0],          # S
+    4: [0, 0],          # Z
+    5: [0, 0, 0, -1],   # J
+    6: [0, 0, 0, -1],    # L
 }
 
 
@@ -129,7 +129,7 @@ def get_all_board_states(env, tetro_idx, tetro):
 
             actions = compute_action_sequence(
                 env,
-                tetro_idx,   # 🔴 REQUIRED
+                tetro_idx,  
                 tetro,
                 rot_id,
                 x

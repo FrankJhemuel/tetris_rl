@@ -40,10 +40,11 @@ total_reward = 0
 total_lines = 0
 
 while not terminated:
-    curr_tetro = env.unwrapped.active_tetromino
+    tetro = env.unwrapped.active_tetromino
+    tetro_idx = env.unwrapped.tetrominoes.index(tetro)
 
     # 1️⃣ Generate all possible placements for current piece
-    placements = get_all_board_states(env, curr_tetro)
+    placements = get_all_board_states(env, tetro_idx, tetro)
 
     # 2️⃣ Convert boards to batch tensor for DQN
     boards_batch = np.array([p["board"] for p in placements], dtype=np.float32)
@@ -81,7 +82,7 @@ while not terminated:
                 cv2.LINE_AA
             )
             cv2.imshow("Tetris DQN Play", frame)
-            if cv2.waitKey(50) & 0xFF == ord('q'):
+            if cv2.waitKey(100) & 0xFF == ord('q'):
                 terminated = True
                 break
 
