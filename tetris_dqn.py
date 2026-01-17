@@ -415,9 +415,13 @@ if __name__ == "__main__":
                     cv2.waitKey(50)
 
                 reward = shape_reward(env, prev_board, info)
+                state = prev_board[np.newaxis, :, :].astype(np.float32)
                 next_state = get_state_channels(env)
-                remember(get_state_channels(env), reward, next_state, terminated)
+
+                remember(state, reward, next_state, terminated)
+
                 replay()
+
 
                 total_reward += reward
                 prev_board = env.unwrapped.board.copy()
@@ -489,18 +493,26 @@ if __name__ == "__main__":
 #             terminated = False
 #             total_reward = 0
 #             prev_board = env.unwrapped.board.copy()
+#             cumulative_lines = 0
 
 #             while not terminated:
-#                 curr_tetro = env.unwrapped.active_tetromino
-#                 placements = get_all_board_states(env, curr_tetro)
+#                 # --- Get current tetromino ---
+#                 tetro = env.unwrapped.active_tetromino
+#                 tetro_idx = env.unwrapped.tetrominoes.index(tetro)
 
-#                 # Convert boards to batch tensor
+#                 # --- Enumerate all possible placements ---
+#                 placements = get_all_board_states(env, tetro_idx, tetro)
+#                 if not placements:  # No valid moves
+#                     break
+
+#                 # --- Convert boards to tensor for policy evaluation ---
 #                 boards_batch = np.array([p["board"] for p in placements], dtype=np.float32)
 #                 boards_batch = torch.tensor(boards_batch[:, np.newaxis, :, :], dtype=torch.float32).to(device)
 
 #                 with torch.no_grad():
 #                     q_values = policy_net(boards_batch).squeeze()
 
+#                 # --- Epsilon-greedy selection ---
 #                 if random.random() < epsilon:
 #                     chosen_idx = random.randint(0, len(placements)-1)
 #                 else:
@@ -508,7 +520,7 @@ if __name__ == "__main__":
 
 #                 chosen = placements[chosen_idx]
 
-#                 # Execute actions
+#                 # --- Execute actions for the chosen placement ---
 #                 for a in chosen["actions"]:
 #                     if terminated:
 #                         break
@@ -516,19 +528,33 @@ if __name__ == "__main__":
 #                     env.render()
 #                     cv2.waitKey(50)
 
+#                 # --- Compute shaped reward ---
 #                 reward = shape_reward(env, prev_board, info)
+
+#                 # --- Store transition in memory ---
+#                 state = prev_board[np.newaxis, :, :].astype(np.float32)
 #                 next_state = get_state_channels(env)
-#                 remember(get_state_channels(env), reward, next_state, terminated)
-#                 replay()
-#                 # print(reward)
+#                 remember(state, reward, next_state, terminated)
+
+#                 # --- Replay only if memory has enough transitions ---
+#                 if len(memory) > batch_size * 5:
+#                     replay()
+
 #                 total_reward += reward
 #                 prev_board = env.unwrapped.board.copy()
 
+#                 # --- Update cumulative lines if needed ---
+#                 if info and "lines_cleared" in info:
+#                     cumulative_lines += info["lines_cleared"]
+
+#             # --- Epsilon decay ---
 #             epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
+#             # --- Update target network periodically ---
 #             if (episode+1) % target_update_freq == 0:
 #                 target_net.load_state_dict(policy_net.state_dict())
 
+#             # --- Save checkpoints periodically ---
 #             if (episode+1) % SAVE_EVERY == 0:
 #                 checkpoint_path = f"{CHECKPOINT_DIR}/tetris_dqn_ep{episode+1}.pth"
 #                 torch.save({
@@ -540,6 +566,7 @@ if __name__ == "__main__":
 #                 cleanup_checkpoints(CHECKPOINT_DIR, MAX_CHECKPOINTS)
 #                 save_training_graph(rewards_per_episode, epsilon_history)
 
+#             # --- Save best model ---
 #             if total_reward > best_reward:
 #                 best_reward = total_reward
 #                 torch.save({
@@ -552,7 +579,7 @@ if __name__ == "__main__":
 
 #             rewards_per_episode.append(total_reward)
 #             epsilon_history.append(epsilon)
-#             print(f"Episode {episode+1}: Reward: {total_reward:.2f}, Epsilon: {epsilon:.3f}")
+#             print(f"Episode {episode+1}: Reward: {total_reward:.2f}, Epsilon: {epsilon:.3f}, Lines: {cumulative_lines}")
 
 #     finally:
 #         torch.save({
