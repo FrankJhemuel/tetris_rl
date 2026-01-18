@@ -20,7 +20,7 @@ from tetris_gymnasium.mappings.actions import ActionsMapping
 # ------------------------
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-GRAPH_FILE = "tetris_training_graph_features.png"
+GRAPH_FILE = "tetris_training_graph.png"
 SAVE_EVERY = 100
 MAX_CHECKPOINTS = 10
 
@@ -43,36 +43,33 @@ print(f"Using device: {device}")
 A = ActionsMapping()
 
 # ------------------------
-# Feature-Only DQN Network (TetrisAI Style)
+# DQN Network
 # ------------------------
 class DQN(nn.Module):
-    def __init__(self, feature_dim=5, simple_network=False):
+    def __init__(self, input_shape):
         super(DQN, self).__init__()
-        
-        if simple_network:
-            # Simple 1-hidden-layer network (3 layers total)
-            self.network = nn.Sequential(
-                nn.Linear(feature_dim, 64),    # Input -> Hidden
-                nn.ReLU(),
-                nn.Linear(64, 1)               # Hidden -> Output
-            )
-            print("🔧 Using simple 1-hidden-layer network (3 layers total)")
-        else:
-            # Current 2-hidden-layer network (4 layers total)
-            self.network = nn.Sequential(
-                nn.Linear(feature_dim, 64),
-                nn.ReLU(),
-                nn.Linear(64, 128),
-                nn.ReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(128, 64),
-                nn.ReLU(),
-                nn.Linear(64, 1)
-            )
-            print("🧠 Using complex 2-hidden-layer network (4 layers total)")
+        self.conv = nn.Sequential(
+            nn.Conv2d(input_shape[0], 32, 3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, stride=1, padding=1),
+            nn.ReLU()
+        )
+        conv_out_size = 64 * input_shape[1] * input_shape[2]
+        self.fc = nn.Sequential(
+            nn.Linear(conv_out_size, 512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
 
-    def forward(self, features):
-        return self.network(features)
+    def forward(self, x):
+        x = self.conv(x)
+        x = x.view(x.size(0), -1)
+        return self.fc(x)
 
 # ------------------------
 # Environment
@@ -100,66 +97,6 @@ def piece_placed(prev_board, env):
     curr_playable = current_board[:H-4, 4:W-4]
     return not np.array_equal(prev_playable, curr_playable)
 
-def extract_tetris_features(board_state):
-    """
-    Extract the 5 key features used in TetrisAI:
-    1. Total difference in height of adjacent columns (roughness)
-    2. Holes (empty spaces that cannot be filled)
-    3. Maximum height of structure
-    4. Minimum height of structure  
-    5. Lines cleared (will be passed separately)
-    
-    Args:
-        board_state: 2D numpy array representing the playable board (H x W)
-    
-    Returns:
-        dict with feature values
-    """
-    H, W = board_state.shape
-    
-    # Calculate column heights
-    column_heights = []
-    holes = 0
-    
-    for col in range(W):
-        column = board_state[:, col]
-        # Find topmost filled cell
-        filled_rows = np.where(column > 0)[0]
-        if len(filled_rows) > 0:
-            height = H - filled_rows[0]  # Height from bottom
-            column_heights.append(height)
-            
-            # Count holes: empty cells below the topmost filled cell
-            for row in range(filled_rows[0] + 1, H):
-                if column[row] == 0:
-                    holes += 1
-        else:
-            column_heights.append(0)
-    
-    # Feature 1: Total height difference between adjacent columns (roughness)
-    roughness = 0
-    for i in range(W - 1):
-        roughness += abs(column_heights[i] - column_heights[i + 1])
-    
-    # Feature 2: Total holes
-    total_holes = holes
-    
-    # Feature 3: Maximum height
-    max_height = max(column_heights) if column_heights else 0
-    
-    # Feature 4: Minimum height  
-    min_height = min(column_heights) if column_heights else 0
-    
-    # Feature 5: Lines cleared (will be added separately)
-    
-    return {
-        'roughness': roughness,
-        'holes': total_holes,
-        'max_height': max_height,
-        'min_height': min_height,
-        'column_heights': column_heights
-    }
-
 def get_state_channels(env: Tetris) -> np.ndarray:
     board = env.unwrapped.board.astype(np.float32)
     H, W = board.shape
@@ -178,67 +115,75 @@ def get_state_channels(env: Tetris) -> np.ndarray:
     # Stack channels: (2, H, W) - board state + piece info
     return np.stack([board_channel, piece_channel], axis=0)
 
-def get_combined_features(env: Tetris, lines_cleared=0) -> np.ndarray:
-    """
-    Get both CNN features and TetrisAI-style features combined
-    Returns: tuple of (cnn_channels, feature_vector)
-    """
-    board = env.unwrapped.board.astype(np.float32)
-    H, W = board.shape
-    
-    # Remove padding - extract playable area only
-    playable_board = board[:H-4, 4:W-4]  # Remove bottom 4 rows and side 4 columns
-    
-    # CNN channels (existing approach)
-    board_channel = (playable_board > 0).astype(np.float32)
-    piece_id = env.unwrapped.active_tetromino.id - 2  
-    piece_channel = np.full_like(board_channel, piece_id / 6.0)
-    cnn_channels = np.stack([board_channel, piece_channel], axis=0)
-    
-    # TetrisAI-style features
-    features = extract_tetris_features(playable_board)
-    
-    # Create feature vector: [roughness, holes, max_height, min_height, lines_cleared]
-    # Normalize features to reasonable ranges
-    feature_vector = np.array([
-        features['roughness'] / 20.0,      # Normalize roughness (typical range 0-20)
-        features['holes'] / 10.0,          # Normalize holes (typical range 0-10) 
-        features['max_height'] / 20.0,     # Normalize max height (0-20)
-        features['min_height'] / 20.0,     # Normalize min height (0-20)
-        lines_cleared / 4.0                # Normalize lines cleared (0-4 per placement)
-    ], dtype=np.float32)
-    
-    return cnn_channels, feature_vector
+def shape_reward(env, prev_board=None, info=None):
+    env = env.unwrapped
+    reward = 2.0  # Increased base reward for placing a piece (survival)
 
-def shape_reward(env, prev_board=None, info=None, prev_lines_cleared=0):
-    """
-    TetrisAI-style reward system:
-    - 1 Line cleared = 100 points
-    - 2 Lines cleared = 200 points  
-    - 3 Lines cleared = 300 points
-    - 4 Lines cleared (Tetris) = 800 points
-    - Back-to-back Tetris = 1200 points
-    """
-    reward = 1.0  # Small base reward for placing a piece (survival)
-    
+    board = env.board.copy()
+    H, W = board.shape
+    playable_board = board[:H-4, 4:W-4]
+    H_p, W_p = playable_board.shape
+
     # ------------------------
-    # TetrisAI Scoring System
+    # Reward for lines cleared (DOMINANT)
     # ------------------------
     lines = info.get("lines_cleared", 0) if info else 0
-    
-    if lines == 1:
-        reward += 100
-    elif lines == 2:
-        reward += 200
-    elif lines == 3:
-        reward += 300
-    elif lines == 4:
-        # Check if this is a back-to-back Tetris
-        if prev_lines_cleared == 4:
-            reward += 1200  # Back-to-back Tetris bonus
-        else:
-            reward += 800   # Regular Tetris
-    
+    reward += lines * 30  # Increased line clearing reward to be more dominant
+
+    # ------------------------
+    # Compute holes and column heights
+    # ------------------------
+    holes = 0
+    column_heights = []
+    for c in range(W_p):
+        col = playable_board[:, c]
+        found_block = False
+        for row in range(H_p):
+            if col[row] > 0:
+                found_block = True
+            elif found_block and col[row] == 0:
+                holes += 1
+        filled_rows = np.where(col > 0)[0]
+        height = H_p - filled_rows[0] if len(filled_rows) > 0 else 0
+        column_heights.append(height)
+
+    smoothness = sum(abs(column_heights[i] - column_heights[i+1]) for i in range(W_p-1))
+    max_height = max(column_heights)
+
+    # ------------------------
+    # Reward based on improvement from previous board (SMALLER IMPACT)
+    # ------------------------
+    if prev_board is not None:
+        prev_playable = prev_board[:H-4, 4:W-4]
+
+        prev_holes = 0
+        prev_column_heights = []
+        for c in range(W_p):
+            col = prev_playable[:, c]
+            found_block = False
+            for row in range(H_p):
+                if col[row] > 0:
+                    found_block = True
+                elif found_block and col[row] == 0:
+                    prev_holes += 1
+            filled_rows = np.where(col > 0)[0]
+            height = H_p - filled_rows[0] if len(filled_rows) > 0 else 0
+            prev_column_heights.append(height)
+
+        prev_smoothness = sum(abs(prev_column_heights[i] - prev_column_heights[i+1]) for i in range(W_p-1))
+        prev_max_height = max(prev_column_heights)
+
+        # ------------------------
+        # REDUCED delta weights to prevent overwhelming negative rewards
+        delta_holes = prev_holes - holes
+        reward += (delta_holes + 0.5) * 2.0  # Reduced weight and smaller baseline
+
+        delta_smooth = prev_smoothness - smoothness
+        reward += delta_smooth * 0.1  # Reduced weight
+
+        delta_height = prev_max_height - max_height
+        reward += delta_height * 0.5  # Reduced weight
+
     return reward
 
 def save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode):
@@ -399,27 +344,18 @@ def get_all_board_states(env, tetro_idx, tetro):
 
             new_board = place_piece(board, piece, x, y)
             
-            # Extract playable area for feature calculation
+            # CRITICAL: Convert to the same 2-channel format as get_state_channels()
             H_full, W_full = new_board.shape
             playable_board = new_board[:H_full-4, 4:W_full-4]  # Remove padding
             
-            # Calculate lines that would be cleared
-            lines_cleared = 0
-            for row in range(playable_board.shape[0]):
-                if np.all(playable_board[row] > 0):
-                    lines_cleared += 1
+            # Channel 1: Board state (0=empty, 1=occupied)
+            board_channel = (playable_board > 0).astype(np.float32)
             
-            # Extract TetrisAI-style features
-            features = extract_tetris_features(playable_board)
+            # Channel 2: Piece ID channel (same piece ID as current)
+            piece_channel = np.full_like(board_channel, tetro_idx / 6.0)  # Normalize to [0, 1]
             
-            # Create feature vector: [roughness, holes, max_height, min_height, lines_cleared]
-            feature_vector = np.array([
-                features['roughness'] / 20.0,      # Normalize roughness (typical range 0-20)
-                features['holes'] / 10.0,          # Normalize holes (typical range 0-10) 
-                features['max_height'] / 20.0,     # Normalize max height (0-20)
-                features['min_height'] / 20.0,     # Normalize min height (0-20)
-                lines_cleared / 4.0                # Normalize lines cleared (0-4 per placement)
-            ], dtype=np.float32)
+            # Stack channels to match get_state_channels format
+            clean_board = np.stack([board_channel, piece_channel], axis=0)
 
             actions = compute_action_sequence(
                 env,
@@ -433,7 +369,7 @@ def get_all_board_states(env, tetro_idx, tetro):
                 "rotation": rot_id,
                 "x": x,
                 "y": y,
-                "features": feature_vector,  # Now returns feature vector instead of board
+                "board": clean_board,  # Now returns cleaned board format
                 "actions": actions
             })
 
@@ -442,55 +378,37 @@ def get_all_board_states(env, tetro_idx, tetro):
 # ------------------------
 # Replay Memory & Networks
 # ------------------------
-# Create networks for feature-based approach (5 features)
-feature_dim = 5
-USE_SIMPLE_NETWORK = True  # Set to False for complex 4-layer network
-policy_net = DQN(feature_dim, simple_network=USE_SIMPLE_NETWORK).to(device)
-target_net = DQN(feature_dim, simple_network=USE_SIMPLE_NETWORK).to(device)
+# Create a dummy state with the NEW cleaned dimensions to get the correct state_dim
+dummy_env_reset = env.reset()
+dummy_state = get_state_channels(env)  # This now returns the cleaned (20x10) board
+state_dim = dummy_state.shape
+policy_net = DQN(state_dim).to(device)
+target_net = DQN(state_dim).to(device)
 target_net.load_state_dict(policy_net.state_dict())
 optimizer = optim.Adam(policy_net.parameters(), lr=lr)
 loss_fn = nn.MSELoss()
 memory = deque(maxlen=memory_size)
 
-def remember(features, reward, next_features, done):
-    memory.append((features, reward, next_features, done))
+def remember(state, reward, next_state, done):
+    memory.append((state, reward, next_state, done))
 
 def replay():
     if len(memory) < batch_size:
         return
     batch = random.sample(memory, batch_size)
-    features, rewards, next_features, dones = zip(*batch)
-    features = torch.tensor(np.array(features), dtype=torch.float32).to(device)
-    next_features = torch.tensor(np.array(next_features), dtype=torch.float32).to(device)
+    states, rewards, next_states, dones = zip(*batch)
+    states = torch.tensor(np.array(states), dtype=torch.float32).to(device)
+    next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(device)
     rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
     dones = torch.tensor(dones, dtype=torch.float32).to(device)
-    
-    q_values = policy_net(features).squeeze()
-    next_q_values = target_net(next_features).squeeze()
+    q_values = policy_net(states).squeeze()
+    next_q_values = target_net(next_states).squeeze()
     target = rewards + gamma * next_q_values * (1 - dones)
     loss = loss_fn(q_values, target.detach())
     optimizer.zero_grad()
     loss.backward()
     torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 1.0)
     optimizer.step()
-
-def get_current_state_features(env):
-    """Get features for the current board state"""
-    board = env.unwrapped.board.astype(np.float32)
-    H, W = board.shape
-    playable_board = board[:H-4, 4:W-4]  # Remove padding
-    
-    features = extract_tetris_features(playable_board)
-    
-    feature_vector = np.array([
-        features['roughness'] / 20.0,      
-        features['holes'] / 10.0,          
-        features['max_height'] / 20.0,     
-        features['min_height'] / 20.0,     
-        0.0  # lines_cleared for current state (always 0)
-    ], dtype=np.float32)
-    
-    return feature_vector
 
 # ------------------------
 # Main Training Loop (stop at 20 clears)
@@ -499,7 +417,7 @@ def get_current_state_features(env):
 CLEARS_GOAL = 60
 if __name__ == "__main__":
     # Load checkpoint if it exists
-    RESUME_CHECKPOINT = "best_model_features__.pth"  # Feature-based model saved by reward
+    RESUME_CHECKPOINT = "best_model__.pth"  # or specify a checkpoint like "checkpoints/tetris_dqn_ep1500.pth"
     start_episode = 0
     if os.path.exists(RESUME_CHECKPOINT):
         print(f"Loading checkpoint: {RESUME_CHECKPOINT}")
@@ -510,7 +428,7 @@ if __name__ == "__main__":
         start_episode = checkpoint.get("episode", 0)
         print(f"Resumed from episode {start_episode}, epsilon={epsilon:.4f}")
     else:
-        print("No feature-based checkpoint found, starting from scratch")
+        print("No checkpoint found, starting from scratch")
     
     best_reward = -float("inf")
     best_lines = 0
@@ -529,7 +447,6 @@ if __name__ == "__main__":
             total_reward = 0
             prev_board = env.unwrapped.board.copy()
             cumulative_lines = 0
-            prev_lines_cleared = 0  # Track previous lines cleared for back-to-back Tetris
 
             step_count = 0
             while not terminated:
@@ -540,12 +457,12 @@ if __name__ == "__main__":
                 if not placements:
                     break
 
-                # Get all feature vectors for possible placements
-                feature_vectors = np.array([p["features"] for p in placements], dtype=np.float32)
-                features_batch = torch.tensor(feature_vectors, dtype=torch.float32).to(device)
+                # Get all hypothetical future boards (now 2-channel format)
+                hypothetical_boards = np.array([p["board"] for p in placements], dtype=np.float32)
+                boards_batch = torch.tensor(hypothetical_boards, dtype=torch.float32).to(device)  # No need to add dimension, already has channels
 
                 with torch.no_grad():
-                    q_values = policy_net(features_batch).squeeze()
+                    q_values = policy_net(boards_batch).squeeze()
 
                 # Pure epsilon-greedy selection (standard DQN)
                 if random.random() < epsilon:
@@ -557,8 +474,8 @@ if __name__ == "__main__":
 
                 chosen = placements[chosen_idx]
                 
-                # Store the features we CHOSE to transition to
-                chosen_features = feature_vectors[chosen_idx]
+                # CRITICAL: Store the board state we CHOSE to transition to
+                chosen_board_state = hypothetical_boards[chosen_idx]  # Already has correct shape (2, H, W)
 
                 # Execute actions
                 for a in chosen["actions"]:
@@ -568,41 +485,25 @@ if __name__ == "__main__":
                     env.render()
                     cv2.waitKey(1)
 
-                # Get current lines cleared for reward calculation
-                current_lines_cleared = info.get("lines_cleared", 0) if info else 0
-                
-                reward = shape_reward(env, prev_board, info, prev_lines_cleared)
+                reward = shape_reward(env, prev_board, info)
                 
                 # Add death penalty to emphasize survival value
                 if terminated:
                     reward -= 5.0  # Reduced penalty for game over
                 
-                # Get next state features
-                next_features = get_current_state_features(env)
+                next_state = get_state_channels(env)
                 
-                # Store: the features we chose, the reward we got, and the resulting next state features
-                remember(chosen_features, reward, next_features, terminated)
+                # Store: the board we chose, the reward we got, and the resulting next state
+                remember(chosen_board_state, reward, next_state, terminated)
                 replay()
 
                 total_reward += reward
                 prev_board = env.unwrapped.board.copy()
-                prev_lines_cleared = current_lines_cleared  # Update for next iteration
                 step_count += 1
 
-                # Update cumulative lines and check for special achievements
-                if current_lines_cleared > 0:
-                    cumulative_lines += current_lines_cleared
-                    if current_lines_cleared == 4:
-                        if prev_lines_cleared == 4:
-                            print(f"🔥 BACK-TO-BACK TETRIS! Episode {episode}, Step {step_count} (+1200 points)")
-                        else:
-                            print(f"🎯 TETRIS! Episode {episode}, Step {step_count} (+800 points)")
-                    elif current_lines_cleared == 3:
-                        print(f"🏆 Triple! Episode {episode}, Step {step_count} (+300 points)")
-                    elif current_lines_cleared == 2:
-                        print(f"✨ Double! Episode {episode}, Step {step_count} (+200 points)")
-                    elif current_lines_cleared == 1:
-                        print(f"⭐ Single! Episode {episode}, Step {step_count} (+100 points)")
+                # Update cumulative lines
+                if info and "lines_cleared" in info:
+                    cumulative_lines += info["lines_cleared"]
 
                 if cumulative_lines >= CLEARS_GOAL:
                     print(f"🎯 Reached {CLEARS_GOAL} line clears in Episode {episode}!")
@@ -627,16 +528,16 @@ if __name__ == "__main__":
                 save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode)
                 print(f"💾 Checkpoint saved at episode {episode}")
 
-            # Save best model based on total reward
-            if total_reward > best_reward:
-                best_reward = total_reward
+            # Save best model based on lines cleared
+            if cumulative_lines > best_lines:
+                best_lines = cumulative_lines
                 torch.save({
                     "policy_state_dict": policy_net.state_dict(),
                     "target_state_dict": target_net.state_dict(),
                     "epsilon": epsilon,
                     "episode": episode
-                }, "best_model_features.pth")
-                print(f"💎 Saved new best feature-based model at Episode {episode} (Reward: {total_reward:.2f})")
+                }, "best_model.pth")
+                print(f"⭐ Saved new best model at Episode {episode} (Lines: {cumulative_lines})")
 
             rewards_per_episode.append(total_reward)
             epsilon_history.append(epsilon)

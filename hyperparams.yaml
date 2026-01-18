@@ -1,9 +1,9 @@
 gamma: 0.99             # keep long-term reward focus
 epsilon: 1.0            # start fully exploratory
-epsilon_decay: 0.995    # reaches 0.05 in ~600 episodes
+epsilon_decay: 0.9995    # reaches 0.05 in ~6000 episodes (much slower for complex Tetris state space)
 epsilon_min: 0.01       # very small exploration (reduced from 0.05)
 lr: 0.00005             # REDUCED learning rate for more stable learning (was 0.0001)
 batch_size: 64          # good batch size
-memory_size: 10000      # prevents OOM, still plenty for diversity
+memory_size: 25000      # INCREASED for better experience diversity in complex Tetris state space
 target_update_freq: 100 # INCREASED - update target less frequently for stability (was 50)
 num_episodes: 15000     # plenty of episodes
