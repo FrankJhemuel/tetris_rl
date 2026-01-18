@@ -146,6 +146,26 @@ def get_all_board_states(env, tetro_idx, tetro):
     return results
 
 # ------------------------
+# Save placements to file
+# ------------------------
+def save_placements_to_file(placements, tetro_idx):
+    filename = f"tetro_{tetro_idx}_placements.txt"
+    with open(filename, "w") as f:
+        for p in placements:
+            f.write(f"=== Rotation {p['rotation']} ===\n")
+            f.write(f"Placed at x={p['x']}, y={p['y']}:\n")
+            
+            # Convert board to text using 1 and .
+            board_str = ""
+            for row in p['board']:
+                board_str += " ".join(str(int(cell)) if cell else '.' for cell in row) + "\n"
+            f.write(board_str)
+            
+            f.write(f"Actions: {p['actions']}\n")
+            f.write("-" * 30 + "\n")
+    print(f"Placements saved to {filename}")
+
+# ------------------------
 # Main
 # ------------------------
 env = Tetris(render_mode="rgb_array")
@@ -157,6 +177,9 @@ tetro = env.unwrapped.tetrominoes[tetro_idx]
 
 # Compute all placements
 placements = get_all_board_states(env, tetro_idx, tetro)
+
+# Save all placements to file
+save_placements_to_file(placements, tetro_idx)
 
 placement_idx = int(input(f"Enter placement index (0-{len(placements)-1}): "))
 p = placements[placement_idx]

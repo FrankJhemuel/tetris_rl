@@ -52,13 +52,18 @@ class DQN(nn.Module):
             nn.Conv2d(input_shape[0], 32, 3, stride=1, padding=1),
             nn.ReLU(),
             nn.Conv2d(32, 64, 3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, stride=1, padding=1),
             nn.ReLU()
         )
         conv_out_size = 64 * input_shape[1] * input_shape[2]
         self.fc = nn.Sequential(
-            nn.Linear(conv_out_size, 256),
+            nn.Linear(conv_out_size, 512),
             nn.ReLU(),
-            nn.Linear(256, 1)
+            nn.Dropout(0.2),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
         )
 
     def forward(self, x):
@@ -94,99 +99,66 @@ def piece_placed(prev_board, env):
 
 def get_state_channels(env: Tetris) -> np.ndarray:
     board = env.unwrapped.board.astype(np.float32)
+    # Normalize to [0, 1]
+    board = np.clip(board, 0, 1)
     return board[np.newaxis, :, :]
 
 def shape_reward(env, prev_board=None, info=None):
     env = env.unwrapped
-    reward = 1.0  # base reward for placing a piece (survival)
-
-    board = env.board.copy()
-    H, W = board.shape
-    playable_board = board[:H-4, 4:W-4]
-    H_p, W_p = playable_board.shape
-
+    
     # ------------------------
-    # Reward for lines cleared
+    # ULTRA-SIMPLE reward: just lines cleared
     # ------------------------
     lines = info.get("lines_cleared", 0) if info else 0
-    reward += lines * 50  # line clearing is the main goal
-
-    # ------------------------
-    # Compute holes and column heights
-    # ------------------------
-    holes = 0
-    column_heights = []
-    for c in range(W_p):
-        col = playable_board[:, c]
-        found_block = False
-        for row in range(H_p):
-            if col[row] > 0:
-                found_block = True
-            elif found_block and col[row] == 0:
-                holes += 1
-        filled_rows = np.where(col > 0)[0]
-        height = H_p - filled_rows[0] if len(filled_rows) > 0 else 0
-        column_heights.append(height)
-
-    smoothness = sum(abs(column_heights[i] - column_heights[i+1]) for i in range(W_p-1))
-    max_height = max(column_heights)
-
-    # ------------------------
-    # Reward based on improvement from previous board
-    # ------------------------
-    if prev_board is not None:
-        prev_playable = prev_board[:H-4, 4:W-4]
-
-        prev_holes = 0
-        prev_column_heights = []
-        for c in range(W_p):
-            col = prev_playable[:, c]
-            found_block = False
-            for row in range(H_p):
-                if col[row] > 0:
-                    found_block = True
-                elif found_block and col[row] == 0:
-                    prev_holes += 1
-            filled_rows = np.where(col > 0)[0]
-            height = H_p - filled_rows[0] if len(filled_rows) > 0 else 0
-            prev_column_heights.append(height)
-
-        prev_smoothness = sum(abs(prev_column_heights[i] - prev_column_heights[i+1]) for i in range(W_p-1))
-        prev_max_height = max(prev_column_heights)
-
-        # ------------------------
-        # Holes delta: positive if fewer holes than previous
-        delta_holes = prev_holes - holes
-        # shift so that zero holes is optimal (+1)
-        reward += (delta_holes + 1.0) * 1.0  # weight can be tuned
-
-        # Smoothness delta: positive if smoother than previous
-        delta_smooth = prev_smoothness - smoothness
-        reward += delta_smooth * 1.0  # smaller effect
-
-        # Max height delta: negative if the max height increased
-        delta_height = prev_max_height - max_height
-        reward += delta_height * 1.0  # reward lowering max height
+    
+    if lines > 0:
+        # Massive reward for clearing ANY lines
+        reward = lines * 500.0
+        if lines == 2:
+            reward += 200
+        elif lines == 3:
+            reward += 600
+        elif lines == 4:
+            reward += 1200
+    else:
+        # Small penalty for not clearing lines (encourages action)
+        reward = -1.0
 
     return reward
 
-def save_training_graph(rewards_per_episode, epsilon_history):
-    fig = plt.figure(figsize=(12,5))
+def save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode):
+    fig = plt.figure(figsize=(18,5))
     window = 50
+    
+    # Rewards
+    plt.subplot(1, 3, 1)
     if len(rewards_per_episode) >= window:
         avg_rewards = np.convolve(rewards_per_episode, np.ones(window)/window, mode='valid')
     else:
         avg_rewards = rewards_per_episode
-    plt.subplot(1, 2, 1)
     plt.plot(range(len(avg_rewards)), avg_rewards)
     plt.xlabel("Episode")
     plt.ylabel(f"Avg Reward (window={window})")
     plt.title("Reward Progression")
-    plt.subplot(1, 2, 2)
+    
+    # Epsilon
+    plt.subplot(1, 3, 2)
     plt.plot(epsilon_history)
     plt.xlabel("Episode")
     plt.ylabel("Epsilon")
     plt.title("Epsilon Decay")
+    
+    # Lines cleared
+    plt.subplot(1, 3, 3)
+    if len(lines_per_episode) >= window:
+        avg_lines = np.convolve(lines_per_episode, np.ones(window)/window, mode='valid')
+    else:
+        avg_lines = lines_per_episode
+    plt.plot(range(len(avg_lines)), avg_lines)
+    plt.xlabel("Episode")
+    plt.ylabel(f"Avg Lines Cleared (window={window})")
+    plt.title("Lines Cleared Progression")
+    
     plt.tight_layout()
     plt.savefig(GRAPH_FILE)
     plt.close(fig)
@@ -249,7 +221,7 @@ X_OFFSETS = {
     3: [0, 0],          # S
     4: [0, 0],          # Z
     5: [0, 0, 0, -1],   # J
-    6: [0, 0, 0, -1],    # L
+    6: [0, 0, 0, -1],   # L
 }
 
 
@@ -342,6 +314,20 @@ optimizer = optim.Adam(policy_net.parameters(), lr=lr)
 loss_fn = nn.MSELoss()
 memory = deque(maxlen=memory_size)
 
+# Load checkpoint if it exists
+RESUME_CHECKPOINT = "best_model.pth"  # or specify a checkpoint like "checkpoints/tetris_dqn_ep1500.pth"
+start_episode = 0
+if os.path.exists(RESUME_CHECKPOINT):
+    print(f"Loading checkpoint: {RESUME_CHECKPOINT}")
+    checkpoint = torch.load(RESUME_CHECKPOINT, map_location=device)
+    policy_net.load_state_dict(checkpoint["policy_state_dict"])
+    target_net.load_state_dict(checkpoint["target_state_dict"])
+    epsilon = checkpoint.get("epsilon", epsilon)  # Resume from saved epsilon
+    start_episode = checkpoint.get("episode", 0)
+    print(f"Resumed from episode {start_episode}, epsilon={epsilon:.4f}")
+else:
+    print("No checkpoint found, starting from scratch")
+
 def remember(state, reward, next_state, done):
     memory.append((state, reward, next_state, done))
 
@@ -360,6 +346,7 @@ def replay():
     loss = loss_fn(q_values, target.detach())
     optimizer.zero_grad()
     loss.backward()
+    torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 1.0)
     optimizer.step()
 
 # ------------------------
@@ -369,8 +356,10 @@ def replay():
 CLEARS_GOAL = 20
 if __name__ == "__main__":
     best_reward = -float("inf")
+    best_lines = 0
     rewards_per_episode = []
     epsilon_history = []
+    lines_per_episode = []
 
     try:
         episode = 0
@@ -382,29 +371,72 @@ if __name__ == "__main__":
             terminated = False
             total_reward = 0
             prev_board = env.unwrapped.board.copy()
-            cumulative_lines = 0  # Track lines cleared in this game
+            cumulative_lines = 0
 
+            step_count = 0
             while not terminated:
                 tetro = env.unwrapped.active_tetromino
                 tetro_idx = env.unwrapped.tetrominoes.index(tetro)
 
                 placements = get_all_board_states(env, tetro_idx, tetro)
-                if not placements:  # No valid moves
+                if not placements:
                     break
 
-                # Convert boards to batch tensor
-                boards_batch = np.array([p["board"] for p in placements], dtype=np.float32)
-                boards_batch = torch.tensor(boards_batch[:, np.newaxis, :, :], dtype=torch.float32).to(device)
+                # Get all hypothetical future boards
+                hypothetical_boards = np.array([p["board"] for p in placements], dtype=np.float32)
+                boards_batch = torch.tensor(hypothetical_boards[:, np.newaxis, :, :], dtype=torch.float32).to(device)
 
                 with torch.no_grad():
                     q_values = policy_net(boards_batch).squeeze()
 
+                # Epsilon-greedy selection with heuristic fallback
                 if random.random() < epsilon:
-                    chosen_idx = random.randint(0, len(placements)-1)
+                    # During exploration, use a STRONG heuristic to guide learning
+                    heuristic_scores = []
+                    for p in placements:
+                        board = p["board"]
+                        playable = board[:-4, 4:-4]
+                        H_p, W_p = playable.shape
+                        
+                        # Count complete lines FIRST (this is most important)
+                        complete_lines = 0
+                        for row in range(H_p):
+                            if np.all(playable[row, :] > 0):
+                                complete_lines += 1
+                        
+                        # Count holes
+                        holes = 0
+                        heights = []
+                        for c in range(W_p):
+                            col = playable[:, c]
+                            found = False
+                            for r in range(H_p):
+                                if col[r] > 0:
+                                    found = True
+                                elif found and col[r] > 0:
+                                    holes += 1
+                            filled = np.where(col > 0)[0]
+                            heights.append(H_p - filled[0] if len(filled) > 0 else 0)
+                        
+                        max_h = max(heights)
+                        bumpiness = sum(abs(heights[i] - heights[i+1]) for i in range(W_p-1))
+                        
+                        # STRONG heuristic that prioritizes line clearing
+                        score = complete_lines * 100 - holes * 10 - max_h * 1.0 - bumpiness * 1.0
+                        heuristic_scores.append(score)
+                    
+                    # Use heuristic more often during exploration
+                    if random.random() < 0.8:  # 80% heuristic, 20% random
+                        chosen_idx = np.argmax(heuristic_scores)
+                    else:
+                        chosen_idx = random.randint(0, len(placements)-1)
                 else:
                     chosen_idx = torch.argmax(q_values).item()
 
                 chosen = placements[chosen_idx]
+                
+                # CRITICAL: Store the board state we CHOSE to transition to
+                chosen_board_state = hypothetical_boards[chosen_idx][np.newaxis, :, :]
 
                 # Execute actions
                 for a in chosen["actions"]:
@@ -412,19 +444,18 @@ if __name__ == "__main__":
                         break
                     obs, reward_step, terminated, truncated, info = env.step(a)
                     env.render()
-                    cv2.waitKey(50)
+                    cv2.waitKey(1)
 
                 reward = shape_reward(env, prev_board, info)
-                state = prev_board[np.newaxis, :, :].astype(np.float32)
                 next_state = get_state_channels(env)
-
-                remember(state, reward, next_state, terminated)
-
+                
+                # Store: the board we chose, the reward we got, and the resulting next state
+                remember(chosen_board_state, reward, next_state, terminated)
                 replay()
-
 
                 total_reward += reward
                 prev_board = env.unwrapped.board.copy()
+                step_count += 1
 
                 # Update cumulative lines
                 if info and "lines_cleared" in info:
@@ -450,22 +481,24 @@ if __name__ == "__main__":
                     "episode": episode
                 }, checkpoint_path)
                 cleanup_checkpoints(CHECKPOINT_DIR, MAX_CHECKPOINTS)
-                save_training_graph(rewards_per_episode, epsilon_history)
+                save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode)
+                print(f"💾 Checkpoint saved at episode {episode}")
 
-            # Save best reward
-            if total_reward > best_reward:
-                best_reward = total_reward
+            # Save best model based on lines cleared
+            if cumulative_lines > best_lines:
+                best_lines = cumulative_lines
                 torch.save({
                     "policy_state_dict": policy_net.state_dict(),
                     "target_state_dict": target_net.state_dict(),
                     "epsilon": epsilon,
                     "episode": episode
                 }, "best_model.pth")
-                print(f"⭐ Saved new best model at Episode {episode}")
+                print(f"⭐ Saved new best model at Episode {episode} (Lines: {cumulative_lines})")
 
             rewards_per_episode.append(total_reward)
             epsilon_history.append(epsilon)
-            print(f"Episode {episode}: Reward: {total_reward:.2f}, Epsilon: {epsilon:.3f}, Lines: {cumulative_lines}")
+            lines_per_episode.append(cumulative_lines)
+            print(f"Episode {episode}: Reward: {total_reward:.2f}, Epsilon: {epsilon:.3f}, Lines: {cumulative_lines}, Steps: {step_count}")
 
     finally:
         torch.save({
@@ -474,11 +507,11 @@ if __name__ == "__main__":
             "epsilon": epsilon,
             "episode": episode
         }, f"{CHECKPOINT_DIR}/tetris_dqn_latest.pth")
-        save_training_graph(rewards_per_episode, epsilon_history)
+        save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode)
         env.close()
         print("✅ Latest model saved and graph generated")
-
-
+        
+        
 # # ------------------------
 # # Main Training Loop
 # # ------------------------
@@ -493,26 +526,18 @@ if __name__ == "__main__":
 #             terminated = False
 #             total_reward = 0
 #             prev_board = env.unwrapped.board.copy()
-#             cumulative_lines = 0
 
 #             while not terminated:
-#                 # --- Get current tetromino ---
-#                 tetro = env.unwrapped.active_tetromino
-#                 tetro_idx = env.unwrapped.tetrominoes.index(tetro)
+#                 curr_tetro = env.unwrapped.active_tetromino
+#                 placements = get_all_board_states(env, curr_tetro)
 
-#                 # --- Enumerate all possible placements ---
-#                 placements = get_all_board_states(env, tetro_idx, tetro)
-#                 if not placements:  # No valid moves
-#                     break
-
-#                 # --- Convert boards to tensor for policy evaluation ---
+#                 # Convert boards to batch tensor
 #                 boards_batch = np.array([p["board"] for p in placements], dtype=np.float32)
 #                 boards_batch = torch.tensor(boards_batch[:, np.newaxis, :, :], dtype=torch.float32).to(device)
 
 #                 with torch.no_grad():
 #                     q_values = policy_net(boards_batch).squeeze()
 
-#                 # --- Epsilon-greedy selection ---
 #                 if random.random() < epsilon:
 #                     chosen_idx = random.randint(0, len(placements)-1)
 #                 else:
@@ -520,7 +545,7 @@ if __name__ == "__main__":
 
 #                 chosen = placements[chosen_idx]
 
-#                 # --- Execute actions for the chosen placement ---
+#                 # Execute actions
 #                 for a in chosen["actions"]:
 #                     if terminated:
 #                         break
@@ -528,33 +553,19 @@ if __name__ == "__main__":
 #                     env.render()
 #                     cv2.waitKey(50)
 
-#                 # --- Compute shaped reward ---
 #                 reward = shape_reward(env, prev_board, info)
-
-#                 # --- Store transition in memory ---
-#                 state = prev_board[np.newaxis, :, :].astype(np.float32)
 #                 next_state = get_state_channels(env)
-#                 remember(state, reward, next_state, terminated)
-
-#                 # --- Replay only if memory has enough transitions ---
-#                 if len(memory) > batch_size * 5:
-#                     replay()
-
+#                 remember(get_state_channels(env), reward, next_state, terminated)
+#                 replay()
+#                 # print(reward)
 #                 total_reward += reward
 #                 prev_board = env.unwrapped.board.copy()
 
-#                 # --- Update cumulative lines if needed ---
-#                 if info and "lines_cleared" in info:
-#                     cumulative_lines += info["lines_cleared"]
-
-#             # --- Epsilon decay ---
 #             epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
-#             # --- Update target network periodically ---
 #             if (episode+1) % target_update_freq == 0:
 #                 target_net.load_state_dict(policy_net.state_dict())
 
-#             # --- Save checkpoints periodically ---
 #             if (episode+1) % SAVE_EVERY == 0:
 #                 checkpoint_path = f"{CHECKPOINT_DIR}/tetris_dqn_ep{episode+1}.pth"
 #                 torch.save({
@@ -566,7 +577,6 @@ if __name__ == "__main__":
 #                 cleanup_checkpoints(CHECKPOINT_DIR, MAX_CHECKPOINTS)
 #                 save_training_graph(rewards_per_episode, epsilon_history)
 
-#             # --- Save best model ---
 #             if total_reward > best_reward:
 #                 best_reward = total_reward
 #                 torch.save({
@@ -579,7 +589,7 @@ if __name__ == "__main__":
 
 #             rewards_per_episode.append(total_reward)
 #             epsilon_history.append(epsilon)
-#             print(f"Episode {episode+1}: Reward: {total_reward:.2f}, Epsilon: {epsilon:.3f}, Lines: {cumulative_lines}")
+#             print(f"Episode {episode+1}: Reward: {total_reward:.2f}, Epsilon: {epsilon:.3f}")
 
 #     finally:
 #         torch.save({
