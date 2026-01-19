@@ -1,11 +1,11 @@
-# Hyperparameters for DQN training
+# Hyperparameters for DQN training (optimized for survival-focused reward)
 gamma: 0.99                   # Discount factor
 initial_epsilon: 1.0          # Starting exploration rate
-final_epsilon: 0.01           # Minimum exploration rate
-epsilon_decay: 0.997700       # Exponential decay rate per episode (reaches 0.01 at 2000 episodes)
-lr: 0.0001                    # Learning rate
-batch_size: 32                # Batch size for training
-memory_size: 20000            # Replay memory size
-target_update_freq: 100       # How often to update target network
-num_episodes: 3000            # Total number of episodes to train
+final_epsilon: 0.02           # Minimum exploration rate (keep some exploration throughout)
+epsilon_decay: 0.999200       # Exponential decay rate per episode (reaches 0.02 at 4000 episodes)
+lr: 0.0002                    # Learning rate (moderate for stable long-term training)
+batch_size: 64                # Batch size for training (larger batches for stability)
+memory_size: 30000            # Replay memory size (increased for more diverse experiences)
+target_update_freq: 100       # How often to update target network (less frequent for stability)
+num_episodes: 5000            # Total number of episodes to train (longer for survival-based learning)
 save_interval: 100            # Save checkpoint every N episodes

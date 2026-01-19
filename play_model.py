@@ -160,7 +160,6 @@ while True:  # Infinite loop - play until user quits
     total_score = 0
     pieces_placed = 0
     line_clears = {1: 0, 2: 0, 3: 0, 4: 0}  # Track single, double, triple, tetris
-    last_clear_was_tetris = False
     
     print(f"\n{'='*50}")
     print(f"🎮 GAME #{game_count} START")
@@ -213,20 +212,42 @@ while True:  # Infinite loop - play until user quits
             if frame is not None:
                 frame = cv2.resize(frame, (frame.shape[1]*4, frame.shape[0]*4), interpolation=cv2.INTER_NEAREST)
                 
-                # Display stats on frame
-                y_pos = 30
-                cv2.putText(frame, f"Score: {total_score}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                y_pos += 30
-                cv2.putText(frame, f"Lines: {total_lines}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                y_pos += 30
-                cv2.putText(frame, f"Pieces: {pieces_placed}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                y_pos += 30
-                cv2.putText(frame, f"1x: {line_clears[1]}  2x: {line_clears[2]}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-                y_pos += 25
-                cv2.putText(frame, f"3x: {line_clears[3]}  4x: {line_clears[4]}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-                y_pos += 30
+                # Display stats on frame (lower right corner)
+                frame_height = frame.shape[0]
+                frame_width = frame.shape[1]
+                
+                # Start from bottom and work upwards
+                y_pos = frame_height - 30
+                
                 # High score display with gold color
-                cv2.putText(frame, f"Highscore: {highscore['score']}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2, cv2.LINE_AA)
+                text = f"Highscore: {highscore['score']}"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
+                cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 215, 255), 3, cv2.LINE_AA)
+                y_pos -= 45
+                
+                text = f"3x: {line_clears[3]}  4x: {line_clears[4]}"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]
+                cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+                y_pos -= 40
+                
+                text = f"1x: {line_clears[1]}  2x: {line_clears[2]}"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]
+                cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+                y_pos -= 45
+                
+                text = f"Pieces: {pieces_placed}"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
+                cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3, cv2.LINE_AA)
+                y_pos -= 45
+                
+                text = f"Lines: {total_lines}"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
+                cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3, cv2.LINE_AA)
+                y_pos -= 45
+                
+                text = f"Score: {total_score}"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
+                cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3, cv2.LINE_AA)
                 
                 cv2.imshow("Tetris DQN Play", frame)
                 if cv2.waitKey(100) & 0xFF == ord('q'):
@@ -239,14 +260,10 @@ while True:  # Infinite loop - play until user quits
         
         # Calculate score based on the same reward formula as training
         if lines_cleared_this_step >= 4:  # Tetris
-            step_score = lines_cleared_this_step * 200
-            if last_clear_was_tetris:
-                step_score += 400  # Back-to-back tetris bonus
-            last_clear_was_tetris = True
+            step_score = 1200  # Fixed tetris reward
             line_clears[4] += 1
-        elif lines_cleared_this_step > 0:  # Regular clear
+        elif lines_cleared_this_step > 0:  # Regular clear (1-3 lines)
             step_score = lines_cleared_this_step * 100
-            last_clear_was_tetris = False
             line_clears[lines_cleared_this_step] += 1
         else:
             step_score = 0

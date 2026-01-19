@@ -52,7 +52,7 @@ FEATURE_DIM = 5
 print("🔧 Using 5-feature extraction (aggregate_height, complete_lines, holes, min_height, max_height)")
 
 # ------------------------
-# Feature-Only DQN Network (TetrisAI Style)
+# Feature-Only DQN Network
 # ------------------------
 class DQN(nn.Module):
     def __init__(self, feature_dim=5):
@@ -165,18 +165,16 @@ def extract_features(board_state):
         'max_height': max_height
     }
 
-def shape_reward(lines_cleared, terminated, last_clear_was_tetris=False):
+def shape_reward(lines_cleared, terminated):
     """
-    Reward formula based on the Processing reference code:
+    Reward formula based on Processing reference (without back-to-back bonus):
     - Regular clears (1-3 lines): cleared * 100
-    - Tetris (4 lines): cleared * 200
-    - Back-to-back Tetris bonus: +400
-    - Game over: return negative score
+    - Tetris (4 lines): 1200
+    - Game over: -200
     
     Args:
         lines_cleared: Number of lines cleared this step
         terminated: Whether the game ended
-        last_clear_was_tetris: Whether the previous clear was also a tetris (for bonus)
     
     Returns:
         Reward score for this step
@@ -184,16 +182,16 @@ def shape_reward(lines_cleared, terminated, last_clear_was_tetris=False):
     if terminated:
         return -200  # Penalty for game over
     
-    score = 0
+    reward = 10
     
-    if lines_cleared >= 4:  # Tetris (4-line clear)
-        score += lines_cleared * 200
-        if last_clear_was_tetris:
-            score += 400  # Back-to-back tetris bonus
+    if lines_cleared >= 4:  # Tetris
+        reward += 800
     elif lines_cleared > 0:  # Regular clear (1-3 lines)
-        score += lines_cleared * 100
+        reward += lines_cleared * 100
+
+    return reward
     
-    return score
+    return 0
 
 def save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode):
     fig = plt.figure(figsize=(18,5))
@@ -439,7 +437,6 @@ def remember(features, reward, next_features, done):
     memory.append((features, reward, next_features, done))
 
 def replay():
-    """Reference-style replay training (exact match to TetrisAI)"""
     if len(memory) < batch_size:
         return
     
@@ -530,7 +527,6 @@ if __name__ == "__main__":
         episode_pieces = 0
         episode_reward_total = 0  # Track cumulative reward per episode
         episode_lines_total = 0  # Track total lines cleared per episode
-        last_clear_was_tetris = False  # Track back-to-back tetris bonus
 
         while episode < num_episodes:
             # Get all possible next states (like reference implementation)
@@ -578,16 +574,10 @@ if __name__ == "__main__":
                 env.render()
                 cv2.waitKey(1)
             
-            # Calculate reward with back-to-back tetris tracking
-            step_reward = shape_reward(lines_cleared_this_step, terminated, last_clear_was_tetris)
+            # Calculate reward
+            step_reward = shape_reward(lines_cleared_this_step, terminated)
             episode_reward_total += step_reward
             episode_lines_total += lines_cleared_this_step  # Accumulate lines cleared
-            
-            # Update tetris tracking for next piece
-            if lines_cleared_this_step >= 4:
-                last_clear_was_tetris = True
-            elif lines_cleared_this_step > 0:
-                last_clear_was_tetris = False
             
             # Store transition in replay memory
             remember(current_state_features, step_reward, next_state_features, terminated)
@@ -653,7 +643,6 @@ if __name__ == "__main__":
                 episode_pieces = 0
                 episode_reward_total = 0
                 episode_lines_total = 0  # Reset lines counter
-                last_clear_was_tetris = False  # Reset tetris tracking for new episode
                 
                 # Reset environment
                 obs, info = env.reset()
