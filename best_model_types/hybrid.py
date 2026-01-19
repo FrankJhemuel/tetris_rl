@@ -290,17 +290,18 @@ class TetrisEnv:
     @staticmethod
     def shape_reward(lines_cleared, terminated, max_height):
         """
-        Exponential reward formula to heavily incentivize tetrises:
-        - Single line: +1 (minimal reward - discourages clearing singles)
-        - Double lines: +10 (small reward)
-        - Triple lines: +50 (moderate reward)
-        - TETRIS (4 lines): +400 (HUGE reward - exponential scaling!)
-        - Height penalties: Encourage proactive line clearing
-        - Game over: -300 (heavy penalty)
+        Reward formula focused on tetrises with height-based penalty:
+        - Survival: +1 per step survived
+        - Line clears: scaled rewards (single=10, double=30, triple=50, tetris=200)
+        - Tetris bonus: Large reward for clearing 4 lines at once
+        - High stack penalty: -500 when max_height > 12 (dangerous zone)
+        - Game over: -500 (still penalize death)
         
-        Exponential scaling makes tetrises ~40x more valuable than singles,
-        encouraging the agent to set up and wait for tetris opportunities
-        rather than clearing lines immediately.
+        This encourages the agent to:
+        1. Seek tetris opportunities (4-line clears)
+        2. Avoid letting the stack get too high (>12 blocks)
+        3. Clear lines before reaching dangerous heights
+        4. Balance risk vs reward more proactively
         
         Args:
             lines_cleared: Number of lines cleared this step (0-4)
@@ -312,26 +313,22 @@ class TetrisEnv:
         """
         # Heavy penalty for game over
         if terminated:
-            return -300
+            return -200
         
-        # No base survival reward - only reward results
-        reward = 0
+        # Base survival reward: small but keeps agent alive
+        reward = 10
         
-        # EXPONENTIAL line clear rewards - heavily favor tetrises
-        if lines_cleared == 1:
-            reward += 1       # Minimal - almost not worth it
-        elif lines_cleared == 2:
-            reward += 10      # Small reward
-        elif lines_cleared == 3:
-            reward += 50      # Moderate reward
-        elif lines_cleared == 4:
-            reward += 400     # MASSIVE tetris reward! (~40x single line)
+        # Height-based penalty: punish dangerous stack heights
+        # This teaches the agent to avoid risky situations BEFORE dying
+        if max_height > 15:
+            reward -= 15  # Same penalty as death - this is dangerous!
         
-        # Height-based penalties: encourage clearing before danger
-        if max_height > 16:
-            reward -= 50      # Critical danger zone
-        elif max_height > 14:
-            reward -= 20      # Warning zone
+        # Line clear rewards with tetris emphasis
+        if lines_cleared == 4:
+            # TETRIS! Big reward
+            reward += 200
+        else:
+            reward += lines_cleared * 10
 
         return reward
     
