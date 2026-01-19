@@ -40,10 +40,10 @@ def get_model_path(args):
     
     elif args.model == 'features':
         # Use best feature-based model
-        if os.path.exists("best_model_features.pth"):
-            return "best_model_features.pth"
+        if os.path.exists("best_model.pth"):
+            return "best_model.pth"
         else:
-            print("❌ best_model_features.pth not found!")
+            print("❌ best_model.pth not found!")
             exit(1)
     
     elif args.model == 'reference':
@@ -119,75 +119,169 @@ except RuntimeError as e:
         raise e
 
 # ------------------------
+# High Score Management
+# ------------------------
+HIGHSCORE_FILE = "highscore.txt"
+
+def load_highscore():
+    """Load high score from file"""
+    if os.path.exists(HIGHSCORE_FILE):
+        try:
+            with open(HIGHSCORE_FILE, 'r') as f:
+                data = f.read().strip().split(',')
+                return {
+                    'score': int(data[0]),
+                    'lines': int(data[1]),
+                    'tetrises': int(data[2]) if len(data) > 2 else 0
+                }
+        except:
+            return {'score': 0, 'lines': 0, 'tetrises': 0}
+    return {'score': 0, 'lines': 0, 'tetrises': 0}
+
+def save_highscore(score, lines, tetrises):
+    """Save high score to file"""
+    with open(HIGHSCORE_FILE, 'w') as f:
+        f.write(f"{score},{lines},{tetrises}")
+
+highscore = load_highscore()
+print(f"\n🏆 Current High Score: {highscore['score']} (Lines: {highscore['lines']}, Tetrises: {highscore['tetrises']})\n")
+
+# ------------------------
 # Play loop
 # ------------------------
-terminated = False
-total_reward = 0
-total_lines = 0
+game_count = 0
 
-while not terminated:
-    tetro = env.unwrapped.active_tetromino
-    tetro_idx = tetro.id - 2  # Convert tetromino ID (2-8) to index (0-6)
-
-    # 1️⃣ Generate all possible placements for current piece
-    placements = get_all_board_states(env, tetro_idx, tetro)
-
-    # 2️⃣ Extract features for each placement
-    features_batch = []
-    for placement in placements:
-        # The placement already contains the feature vector from training
-        features_batch.append(placement["features"])
+while True:  # Infinite loop - play until user quits
+    game_count += 1
+    obs, info = env.reset()
+    terminated = False
+    total_reward = 0
+    total_lines = 0
+    total_score = 0
+    pieces_placed = 0
+    line_clears = {1: 0, 2: 0, 3: 0, 4: 0}  # Track single, double, triple, tetris
+    last_clear_was_tetris = False
     
-    features_batch = torch.tensor(np.array(features_batch), dtype=torch.float32).to(device)
+    print(f"\n{'='*50}")
+    print(f"🎮 GAME #{game_count} START")
+    print(f"{'='*50}\n")
 
-    # 3️⃣ Predict Q-values
-    with torch.no_grad():
-        q_values = policy_net(features_batch).squeeze()
+    while not terminated:
+        tetro = env.unwrapped.active_tetromino
+        tetro_idx = tetro.id - 2  # Convert tetromino ID (2-8) to index (0-6)
 
-    # 4️⃣ Choose the best placement (greedy)
-    chosen_idx = torch.argmax(q_values).item()
-    chosen = placements[chosen_idx]
-    
-    # 🔍 Debug: Show what the model is thinking
-    print(f"Piece {tetro_idx}: {len(placements)} placements, Q-values: max={q_values.max():.2f}, min={q_values.min():.2f}")
-    print(f"Chosen features: agg_height={chosen['features'][0]:.3f}, lines={chosen['features'][1]:.3f}, holes={chosen['features'][2]:.3f}, min_h={chosen['features'][3]:.3f}, max_h={chosen['features'][4]:.3f}")
-    
-    # Show top 3 choices
-    top_3 = torch.topk(q_values, min(3, len(q_values)))
-    for i, (q_val, idx) in enumerate(zip(top_3.values, top_3.indices)):
-        place = placements[idx]
-        print(f"  #{i+1}: Q={q_val:.2f} x={place['x']} rot={place['rotation']} features={place['features']}")
+        # 1️⃣ Generate all possible placements for current piece
+        placements = get_all_board_states(env, tetro_idx, tetro)
 
-    # 5️⃣ Execute the full action sequence for this placement
-    for a in chosen["actions"]:
-        if terminated:
-            break
-        obs, reward_step, terminated, truncated, info = env.step(a)
-        total_reward += reward_step
-        total_lines += info.get("lines_cleared", 0)
+        # 2️⃣ Extract features for each placement
+        features_batch = []
+        for placement in placements:
+            # The placement already contains the feature vector from training
+            features_batch.append(placement["features"])
+        
+        features_batch = torch.tensor(np.array(features_batch), dtype=torch.float32).to(device)
 
-        # Render
-        frame = env.render()
-        if frame is not None:
-            frame = cv2.resize(frame, (frame.shape[1]*4, frame.shape[0]*4), interpolation=cv2.INTER_NEAREST)
-            cv2.putText(
-                frame,
-                f"Lines: {total_lines}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA
-            )
-            cv2.imshow("Tetris DQN Play", frame)
-            if cv2.waitKey(100) & 0xFF == ord('q'):
-                terminated = True
+        # 3️⃣ Predict Q-values
+        with torch.no_grad():
+            q_values = policy_net(features_batch).squeeze()
+
+        # 4️⃣ Choose the best placement (greedy)
+        chosen_idx = torch.argmax(q_values).item()
+        chosen = placements[chosen_idx]
+        
+        # 🔍 Debug: Show what the model is thinking
+        print(f"Piece {tetro_idx}: {len(placements)} placements, Q-values: max={q_values.max():.2f}, min={q_values.min():.2f}")
+        print(f"Chosen features: agg_height={chosen['features'][0]:.3f}, lines={chosen['features'][1]:.3f}, holes={chosen['features'][2]:.3f}, min_h={chosen['features'][3]:.3f}, max_h={chosen['features'][4]:.3f}")
+        
+        # Show top 3 choices
+        top_3 = torch.topk(q_values, min(3, len(q_values)))
+        for i, (q_val, idx) in enumerate(zip(top_3.values, top_3.indices)):
+            place = placements[idx]
+            print(f"  #{i+1}: Q={q_val:.2f} x={place['x']} rot={place['rotation']} features={place['features']}")
+
+        # 5️⃣ Execute the full action sequence for this placement
+        lines_cleared_this_step = 0
+        for a in chosen["actions"]:
+            if terminated:
                 break
+            obs, reward_step, terminated, truncated, info = env.step(a)
+            total_reward += reward_step
+            lines_cleared_this_step = info.get("lines_cleared", 0)
+            
+            # Render
+            frame = env.render()
+            if frame is not None:
+                frame = cv2.resize(frame, (frame.shape[1]*4, frame.shape[0]*4), interpolation=cv2.INTER_NEAREST)
+                
+                # Display stats on frame
+                y_pos = 30
+                cv2.putText(frame, f"Score: {total_score}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                y_pos += 30
+                cv2.putText(frame, f"Lines: {total_lines}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                y_pos += 30
+                cv2.putText(frame, f"Pieces: {pieces_placed}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                y_pos += 30
+                cv2.putText(frame, f"1x: {line_clears[1]}  2x: {line_clears[2]}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                y_pos += 25
+                cv2.putText(frame, f"3x: {line_clears[3]}  4x: {line_clears[4]}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                y_pos += 30
+                # High score display with gold color
+                cv2.putText(frame, f"Highscore: {highscore['score']}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2, cv2.LINE_AA)
+                
+                cv2.imshow("Tetris DQN Play", frame)
+                if cv2.waitKey(100) & 0xFF == ord('q'):
+                    terminated = True
+                    break
+        
+        # Update statistics after piece placement
+        pieces_placed += 1
+        total_lines += lines_cleared_this_step
+        
+        # Calculate score based on the same reward formula as training
+        if lines_cleared_this_step >= 4:  # Tetris
+            step_score = lines_cleared_this_step * 200
+            if last_clear_was_tetris:
+                step_score += 400  # Back-to-back tetris bonus
+            last_clear_was_tetris = True
+            line_clears[4] += 1
+        elif lines_cleared_this_step > 0:  # Regular clear
+            step_score = lines_cleared_this_step * 100
+            last_clear_was_tetris = False
+            line_clears[lines_cleared_this_step] += 1
+        else:
+            step_score = 0
+        
+        total_score += step_score
 
-print("Game Over!")
-print("Total Reward:", total_reward)
-print("Total Lines Cleared:", total_lines)
-
-env.close()
-cv2.destroyAllWindows()
+    # Game Over - Show Results
+    print("\n" + "="*50)
+    print("💀 GAME OVER!")
+    print("="*50)
+    print(f"Final Score:        {total_score}")
+    print(f"Total Lines:        {total_lines}")
+    print(f"Pieces Placed:      {pieces_placed}")
+    print(f"Total Reward:       {total_reward}")
+    print("\nLine Clears Breakdown:")
+    print(f"  Singles (1x):     {line_clears[1]}")
+    print(f"  Doubles (2x):     {line_clears[2]}")
+    print(f"  Triples (3x):     {line_clears[3]}")
+    print(f"  Tetrises (4x):    {line_clears[4]} 🎯")
+    
+    # Check for high score
+    is_highscore = total_score > highscore['score']
+    if is_highscore:
+        print("\n" + "🎉" * 25)
+        print("🏆 NEW HIGH SCORE! 🏆")
+        print("🎉" * 25)
+        print(f"Previous: {highscore['score']} → New: {total_score}")
+        highscore = {'score': total_score, 'lines': total_lines, 'tetrises': line_clears[4]}
+        save_highscore(total_score, total_lines, line_clears[4])
+    else:
+        print(f"\nHigh Score: {highscore['score']} (Lines: {highscore['lines']}, Tetrises: {highscore['tetrises']})")
+    
+    print("="*50)
+    print("Press Ctrl+C to quit or wait for next game...")
+    print("="*50)
+    
+    # Wait a bit before restarting
+    cv2.waitKey(2000)  # 2 second pause

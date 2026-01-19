@@ -529,6 +529,7 @@ if __name__ == "__main__":
         pieces_placed = 0
         episode_pieces = 0
         episode_reward_total = 0  # Track cumulative reward per episode
+        episode_lines_total = 0  # Track total lines cleared per episode
         last_clear_was_tetris = False  # Track back-to-back tetris bonus
 
         while episode < num_episodes:
@@ -543,9 +544,6 @@ if __name__ == "__main__":
                 current_state_features = get_current_state_features(env)
                 continue
 
-            # Exponential epsilon decay
-            epsilon = max(epsilon_min, epsilon * epsilon_decay)
-            
             # Get all feature vectors and Q-values
             feature_vectors = np.array([p["features"] for p in placements], dtype=np.float32)
             features_batch = torch.tensor(feature_vectors, dtype=torch.float32).to(device)
@@ -583,6 +581,7 @@ if __name__ == "__main__":
             # Calculate reward with back-to-back tetris tracking
             step_reward = shape_reward(lines_cleared_this_step, terminated, last_clear_was_tetris)
             episode_reward_total += step_reward
+            episode_lines_total += lines_cleared_this_step  # Accumulate lines cleared
             
             # Update tetris tracking for next piece
             if lines_cleared_this_step >= 4:
@@ -596,6 +595,9 @@ if __name__ == "__main__":
             # If episode ended, train and start new episode
             if terminated:
                 episode += 1
+                
+                # Exponential epsilon decay (once per episode)
+                epsilon = max(epsilon_min, epsilon * epsilon_decay)
                 
                 # Train if we have enough samples
                 if len(memory) >= batch_size:
@@ -626,13 +628,13 @@ if __name__ == "__main__":
                         "target_state_dict": target_net.state_dict(),
                         "epsilon": epsilon,
                         "episode": episode
-                    }, "best_model_features.pth")
+                    }, "best_model.pth")
                     print(f"💎 Saved new best model at Episode {episode} (Reward: {episode_reward_total:.2f})")
                 
                 # Logging
                 rewards_per_episode.append(episode_reward_total)
                 epsilon_history.append(epsilon)
-                lines_per_episode.append(info.get("lines_cleared", 0))  # Lines from env info
+                lines_per_episode.append(episode_lines_total)  # Total lines cleared in episode
                 
                 # Per-episode diagnostics with Q-value monitoring
                 if len(memory) >= batch_size:
@@ -650,6 +652,7 @@ if __name__ == "__main__":
                 # Reset episode tracking variables
                 episode_pieces = 0
                 episode_reward_total = 0
+                episode_lines_total = 0  # Reset lines counter
                 last_clear_was_tetris = False  # Reset tetris tracking for new episode
                 
                 # Reset environment

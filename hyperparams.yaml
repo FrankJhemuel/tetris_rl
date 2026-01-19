@@ -2,10 +2,10 @@
 gamma: 0.99                   # Discount factor
 initial_epsilon: 1.0          # Starting exploration rate
 final_epsilon: 0.01           # Minimum exploration rate
-epsilon_decay: 0.99995         # Exponential decay rate per episode
+epsilon_decay: 0.997700       # Exponential decay rate per episode (reaches 0.01 at 2000 episodes)
 lr: 0.0001                    # Learning rate
 batch_size: 32                # Batch size for training
 memory_size: 20000            # Replay memory size
 target_update_freq: 100       # How often to update target network
-num_episodes: 15000           # Total number of episodes to train
+num_episodes: 3000            # Total number of episodes to train
 save_interval: 100            # Save checkpoint every N episodes
