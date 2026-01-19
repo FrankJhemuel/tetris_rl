@@ -1,9 +1,11 @@
-gamma: 0.99             # keep long-term reward focus
-epsilon: 1.0            # start fully exploratory
-epsilon_decay: 0.9995    # reaches 0.05 in ~6000 episodes (much slower for complex Tetris state space)
-epsilon_min: 0.01       # very small exploration (reduced from 0.05)
-lr: 0.00005             # REDUCED learning rate for more stable learning (was 0.0001)
-batch_size: 64          # good batch size
-memory_size: 25000      # INCREASED for better experience diversity in complex Tetris state space
-target_update_freq: 100 # INCREASED - update target less frequently for stability (was 50)
-num_episodes: 15000     # plenty of episodes
+# Hyperparameters for DQN training
+gamma: 0.99                   # Discount factor
+initial_epsilon: 1.0          # Starting exploration rate
+final_epsilon: 0.01           # Minimum exploration rate
+epsilon_decay: 0.99995         # Exponential decay rate per episode
+lr: 0.0001                    # Learning rate
+batch_size: 32                # Batch size for training
+memory_size: 20000            # Replay memory size
+target_update_freq: 100       # How often to update target network
+num_episodes: 15000           # Total number of episodes to train
+save_interval: 100            # Save checkpoint every N episodes

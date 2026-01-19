@@ -6,20 +6,25 @@ import random
 import argparse
 import os
 import glob
+import yaml
 
 from tetris_gymnasium.envs.tetris import Tetris
 from tetris_gymnasium.mappings.actions import ActionsMapping
-from tetris_dqn import DQN, get_state_channels, get_all_board_states  # helpers from your training script
+from tetris_dqn import DQN, get_all_board_states, extract_features
 
 A = ActionsMapping()
+
+# Fixed to 5-feature approach
+feature_dim = 5
+print("🔧 Using 5-feature extraction (aggregate_height, complete_lines, holes, min_height, max_height)")
 
 # ------------------------
 # Command Line Arguments
 # ------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description='Play Tetris with trained DQN model')
-    parser.add_argument('--model', type=str, choices=['best', 'latest'], default='best',
-                       help='Choose model: "best" (best_model.pth) or "latest" (latest checkpoint)')
+    parser.add_argument('--model', type=str, choices=['best', 'latest', 'features', 'reference'], default='features',
+                       help='Choose model: "best" (best_model.pth), "latest" (latest checkpoint), "features" (best_model_features.pth), or "reference" (best_model_reference.pth)')
     parser.add_argument('--checkpoint', type=str, 
                        help='Specific checkpoint file (e.g., checkpoints/tetris_dqn_ep1000.pth)')
     return parser.parse_args()
@@ -31,6 +36,22 @@ def get_model_path(args):
             return args.checkpoint
         else:
             print(f"❌ Checkpoint file not found: {args.checkpoint}")
+            exit(1)
+    
+    elif args.model == 'features':
+        # Use best feature-based model
+        if os.path.exists("best_model_features.pth"):
+            return "best_model_features.pth"
+        else:
+            print("❌ best_model_features.pth not found!")
+            exit(1)
+    
+    elif args.model == 'reference':
+        # Use best reference model
+        if os.path.exists("best_model_reference.pth"):
+            return "best_model_reference.pth"
+        else:
+            print("❌ best_model_reference.pth not found!")
             exit(1)
     
     elif args.model == 'best':
@@ -66,13 +87,11 @@ print(f"Using device: {device}")
 # ------------------------
 env = gym.make("tetris_gymnasium/Tetris", render_mode="rgb_array")
 obs, info = env.reset()
-state = get_state_channels(env)
-state_dim = state.shape
 
 # ------------------------
 # Load trained model
 # ------------------------
-policy_net = DQN(state_dim).to(device)
+policy_net = DQN(feature_dim).to(device)
 print(f"📂 Loading model from: {model_path}")
 checkpoint = torch.load(model_path, map_location=device)
 
@@ -94,7 +113,7 @@ except RuntimeError as e:
         print("❌ Model architecture mismatch!")
         print("💡 The saved model was trained with a different input format.")
         print("💡 Please train a new model with the current architecture or use a compatible checkpoint.")
-        print(f"💡 Current model expects: {state_dim}")
+        print(f"💡 Current model expects: {feature_dim} features")
         exit(1)
     else:
         raise e
@@ -113,24 +132,37 @@ while not terminated:
     # 1️⃣ Generate all possible placements for current piece
     placements = get_all_board_states(env, tetro_idx, tetro)
 
-    # 2️⃣ Convert boards to batch tensor for DQN (now 2-channel format)
-    boards_batch = np.array([p["board"] for p in placements], dtype=np.float32)
-    boards_batch = torch.tensor(boards_batch, dtype=torch.float32).to(device)  # No need to add dimension, already has 2 channels
+    # 2️⃣ Extract features for each placement
+    features_batch = []
+    for placement in placements:
+        # The placement already contains the feature vector from training
+        features_batch.append(placement["features"])
+    
+    features_batch = torch.tensor(np.array(features_batch), dtype=torch.float32).to(device)
 
     # 3️⃣ Predict Q-values
     with torch.no_grad():
-        q_values = policy_net(boards_batch).squeeze()
+        q_values = policy_net(features_batch).squeeze()
 
     # 4️⃣ Choose the best placement (greedy)
     chosen_idx = torch.argmax(q_values).item()
     chosen = placements[chosen_idx]
+    
+    # 🔍 Debug: Show what the model is thinking
+    print(f"Piece {tetro_idx}: {len(placements)} placements, Q-values: max={q_values.max():.2f}, min={q_values.min():.2f}")
+    print(f"Chosen features: agg_height={chosen['features'][0]:.3f}, lines={chosen['features'][1]:.3f}, holes={chosen['features'][2]:.3f}, min_h={chosen['features'][3]:.3f}, max_h={chosen['features'][4]:.3f}")
+    
+    # Show top 3 choices
+    top_3 = torch.topk(q_values, min(3, len(q_values)))
+    for i, (q_val, idx) in enumerate(zip(top_3.values, top_3.indices)):
+        place = placements[idx]
+        print(f"  #{i+1}: Q={q_val:.2f} x={place['x']} rot={place['rotation']} features={place['features']}")
 
     # 5️⃣ Execute the full action sequence for this placement
     for a in chosen["actions"]:
         if terminated:
             break
         obs, reward_step, terminated, truncated, info = env.step(a)
-        state = get_state_channels(env)
         total_reward += reward_step
         total_lines += info.get("lines_cleared", 0)
 
