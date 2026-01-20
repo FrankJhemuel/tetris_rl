@@ -1,0 +1,11 @@
+# Hyperparameters for DQN training (optimized for TETRIS-focused reward - rare event)
+gamma: 0.99                   # Discount factor
+initial_epsilon: 1.0          # Starting exploration rate
+final_epsilon: 0.05           # Higher minimum exploration (was 0.02) - keep exploring for rare Tetrises
+epsilon_decay: 0.999200       # Slower decay (was 0.998500) - maintains exploration longer (~4000 episodes to reach 0.05)
+lr: 0.0003                    # Lower learning rate (was 0.0005) - more stable learning from rare events
+batch_size: 32                # Smaller batch (was 64) - rare Tetris experiences appear more frequently in batches
+memory_size: 50000            # Larger memory (was 30000) - retain rare Tetris experiences longer
+target_update_freq: 100       # Less frequent updates (was 50) - give rare experiences more time to propagate
+num_episodes: 5000            # More episodes (was 3000) - need more time to discover rare Tetrises
+save_interval: 100            # Save checkpoint every N episodes

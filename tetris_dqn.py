@@ -278,7 +278,7 @@ class TetrisEnv:
         # Extract features (don't clear lines for current state)
         features = self.extract_features(playable_board, clear_lines=False)
         feature_vector = np.array([
-            features['smoothness'] / 100.0,
+            features['smoothness'] / 100.0,     # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
             features['lines_cleared'] / 4.0,   # 0-4 → 0-1
             features['holes'] / 10.0,          # 0-10 → 0-1
             features['min_height'] / 20.0,     # 0-20 → 0-1
@@ -288,50 +288,28 @@ class TetrisEnv:
         return feature_vector
     
     @staticmethod
-    def shape_reward(lines_cleared, terminated, max_height):
+    def shape_reward(lines_cleared, terminated):
         """
-        Exponential reward formula to heavily incentivize tetrises:
-        - Single line: +1 (minimal reward - discourages clearing singles)
-        - Double lines: +10 (small reward)
-        - Triple lines: +50 (moderate reward)
-        - TETRIS (4 lines): +400 (HUGE reward - exponential scaling!)
-        - Height penalties: Encourage proactive line clearing
-        - Game over: -300 (heavy penalty)
-        
-        Exponential scaling makes tetrises ~40x more valuable than singles,
-        encouraging the agent to set up and wait for tetris opportunities
-        rather than clearing lines immediately.
+        Reward formula focused on survival:
+        - Survival: +10 per step survived
+        - Game over: -200
         
         Args:
-            lines_cleared: Number of lines cleared this step (0-4)
+            lines_cleared: Number of lines cleared this step
             terminated: Whether the game ended
-            max_height: Maximum column height on the board
         
         Returns:
             Reward score for this step
         """
-        # Heavy penalty for game over
         if terminated:
-            return -300
+            return -200  # Penalty for game over
         
-        # No base survival reward - only reward results
-        reward = 0
+        # Survival reward: encourage staying alive
+        reward = 10
         
-        # EXPONENTIAL line clear rewards - heavily favor tetrises
-        if lines_cleared == 1:
-            reward += 1       # Minimal - almost not worth it
-        elif lines_cleared == 2:
-            reward += 10      # Small reward
-        elif lines_cleared == 3:
-            reward += 50      # Moderate reward
-        elif lines_cleared == 4:
-            reward += 400     # MASSIVE tetris reward! (~40x single line)
-        
-        # Height-based penalties: encourage clearing before danger
-        if max_height > 16:
-            reward -= 50      # Critical danger zone
-        elif max_height > 14:
-            reward -= 20      # Warning zone
+        # Line clear reward (no special tetris bonus)
+        # if lines_cleared > 0:
+        #     reward += lines_cleared * 100
 
         return reward
     
@@ -474,7 +452,7 @@ class TetrisEnv:
                 
                 # Build feature vector
                 feature_vector = np.array([
-                    features['smoothness'] / 100.0,
+                    features['smoothness'] / 100.0,         # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
                     features['lines_cleared'] / 4.0,       # 0-4 → 0-1
                     features['holes'] / 10.0,              # 0-10 → 0-1
                     features['min_height'] / 20.0,         # 0-20 → 0-1
@@ -687,12 +665,8 @@ if __name__ == "__main__":
                 tetris_env.render()
                 cv2.waitKey(1)
             
-            # Extract max_height from the next state features (5th feature, denormalized)
-            # Features: [smoothness/100, lines_cleared/4, holes/10, min_height/20, max_height/20]
-            max_height = next_state_features[4] * 20.0  # Denormalize from 0-1 to actual height
-            
-            # Calculate reward with height penalty
-            step_reward = tetris_env.shape_reward(lines_cleared_this_step, terminated, max_height)
+            # Calculate reward
+            step_reward = tetris_env.shape_reward(lines_cleared_this_step, terminated)
             episode_reward_total += step_reward
             episode_lines_total += lines_cleared_this_step  # Accumulate lines cleared
             
