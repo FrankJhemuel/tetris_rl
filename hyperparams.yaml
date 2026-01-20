@@ -1,8 +1,8 @@
-# Hyperparameters for DQN training (optimized for survival-focused reward)
+# Hyperparameters for DQN training (optimized for line-clearing reward)
 gamma: 0.99                   # Discount factor
 initial_epsilon: 1.0          # Starting exploration rate
-final_epsilon: 0.02           # Minimum exploration rate (keep some exploration throughout)
-epsilon_decay: 0.998500       # Exponential decay rate per episode (reaches 0.02 at ~2600 episodes)
+final_epsilon: 0.01           # Minimum exploration rate (1% for better exploitation)
+epsilon_decay: 0.998250       # Exponential decay rate per episode (reaches 0.01 at ~2600 episodes)
 lr: 0.0005                    # Learning rate (increased to escape local maxima faster)
 batch_size: 64                # Batch size for training (larger batches for stability)
 memory_size: 30000            # Replay memory size (increased for more diverse experiences)

@@ -33,16 +33,16 @@ MAX_BEST_MODELS = 10
 FEATURE_DIM = 5
 
 # ------------------------
-# Feature-Only DQN Network
+# VNN - Value Neural Network (Afterstate Learning)
 # ------------------------
-class DQN(nn.Module):
+class VNN(nn.Module):
     def __init__(self, feature_dim=5):
-        super(DQN, self).__init__()
+        super(VNN, self).__init__()
         
         # 5-feature network: feature_dim -> 64 -> 64 -> 1
-        self.conv1 = nn.Sequential(nn.Linear(feature_dim, 64), nn.ReLU(inplace=True))
-        self.conv2 = nn.Sequential(nn.Linear(64, 64), nn.ReLU(inplace=True))
-        self.conv3 = nn.Sequential(nn.Linear(64, 1))
+        self.fc1 = nn.Sequential(nn.Linear(feature_dim, 64), nn.ReLU(inplace=True))
+        self.fc2 = nn.Sequential(nn.Linear(64, 64), nn.ReLU(inplace=True))
+        self.fc3 = nn.Sequential(nn.Linear(64, 1))
         self._create_weights()
         # print(f"🔧 Network architecture: {feature_dim} -> 64 -> 64 -> 1")
 
@@ -54,9 +54,9 @@ class DQN(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, features):
-        x = self.conv1(features)
-        x = self.conv2(x) 
-        x = self.conv3(x)
+        x = self.fc1(features)
+        x = self.fc2(x) 
+        x = self.fc3(x)
         return x
 
 # ------------------------
@@ -80,8 +80,8 @@ class Agent:
         self.batch_size = batch_size
         
         # Create networks
-        self.policy_net = DQN(feature_dim).to(device)
-        self.target_net = DQN(feature_dim).to(device)
+        self.policy_net = VNN(feature_dim).to(device)
+        self.target_net = VNN(feature_dim).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
         # Optimizer and loss
@@ -91,9 +91,9 @@ class Agent:
         # Replay memory
         self.memory = deque(maxlen=memory_size)
     
-    def remember(self, features, reward, next_features, done):
-        """Store transition in replay memory"""
-        self.memory.append((features, reward, next_features, done))
+    def remember(self, features, reward, max_next_q, done):
+        """Store transition in replay memory with max Q-value of next state"""
+        self.memory.append((features, reward, max_next_q, done))
     
     def replay(self):
         """Train the network using a batch from replay memory"""
@@ -101,32 +101,26 @@ class Agent:
             return
         
         batch = random.sample(self.memory, self.batch_size)
-        features, rewards, next_features, dones = zip(*batch)
+        features, rewards, max_next_qs, dones = zip(*batch)
         
         features = torch.tensor(np.array(features), dtype=torch.float32).to(self.device)
-        next_features = torch.tensor(np.array(next_features), dtype=torch.float32).to(self.device)
         rewards = torch.tensor(np.array(rewards, dtype=np.float32), dtype=torch.float32).to(self.device)
+        max_next_qs = torch.tensor(np.array(max_next_qs, dtype=np.float32), dtype=torch.float32).to(self.device)
         
-        # Q-values for current states
-        q_values = self.policy_net(features).squeeze()
+        # State values for current states
+        state_values = self.policy_net(features).squeeze()
         
-        # Q-values for next states (using target network)
-        self.policy_net.eval()
-        with torch.no_grad():
-            next_q_values = self.target_net(next_features).squeeze()
-        self.policy_net.train()
-        
-        # Compute target Q-values
+        # Compute target values using stored max values
         y_batch = []
-        for reward, done, next_q in zip(rewards, dones, next_q_values):
+        for reward, done, max_next_q in zip(rewards, dones, max_next_qs):
             if done:
                 y_batch.append(reward)
             else:
-                y_batch.append(reward + self.gamma * next_q)
+                y_batch.append(reward + self.gamma * max_next_q)
         y_batch = torch.stack(y_batch).to(self.device)
         
         # Compute loss and update
-        loss = self.loss_fn(q_values, y_batch)
+        loss = self.loss_fn(state_values, y_batch)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -278,7 +272,7 @@ class TetrisEnv:
         # Extract features (don't clear lines for current state)
         features = self.extract_features(playable_board, clear_lines=False)
         feature_vector = np.array([
-            features['smoothness'] / 100.0,
+            features['smoothness'] / 100.0,     # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
             features['lines_cleared'] / 4.0,   # 0-4 → 0-1
             features['holes'] / 10.0,          # 0-10 → 0-1
             features['min_height'] / 20.0,     # 0-20 → 0-1
@@ -290,50 +284,57 @@ class TetrisEnv:
     @staticmethod
     def shape_reward(lines_cleared, terminated, max_height):
         """
-        Exponential reward formula to heavily incentivize tetrises:
-        - Survival reward: +0.1 per step (encourages staying alive)
-        - Single line: +1 (minimal reward - discourages clearing singles)
-        - Double lines: +10 (small reward)
-        - Triple lines: +50 (moderate reward)
-        - TETRIS (4 lines): +400 (HUGE reward - exponential scaling!)
-        - Height penalties: Encourage proactive line clearing
-        - Game over: -300 (heavy penalty)
+        Reward formula focused on line clearing and survival:
+        - Tetris (4 lines): +800 points (good reward, but not excessive)
+        - Triple (3 lines): +300 points
+        - Double (2 lines): +200 points
+        - Single (1 line):  +100 points
+        - No lines:         +10 points (survival reward - staying alive is good!)
+        - Height penalties: Progressive penalties for dangerous heights
+        - Game over:        -500 penalty (strong deterrent)
         
-        Exponential scaling makes tetrises ~40x more valuable than singles,
-        encouraging the agent to set up and wait for tetris opportunities
-        rather than clearing lines immediately.
+        The +10 survival reward encourages efficient piece placement and teaches
+        the agent that successfully placing pieces (even without clearing) is valuable.
+        
+        Holes and bumpiness are NOT directly penalized here - the agent should
+        learn they're bad because they lead to worse future states (fewer options,
+        higher risk of death). This allows the agent to discover strategy naturally.
         
         Args:
             lines_cleared: Number of lines cleared this step (0-4)
             terminated: Whether the game ended
-            max_height: Maximum column height on the board
+            max_height: Maximum column height on the board (0-20)
         
         Returns:
             Reward score for this step
         """
-        # Heavy penalty for game over
+        # Heavy penalty for game over - this is the main teaching signal
         if terminated:
-            return -300
+            return -500  # Increased from -300 to strongly discourage risky play
         
-        # Base survival reward - encourage staying alive
-        reward = 0.1
+        # Base scoring system - reduced Tetris reward to balance risk/reward
+        if lines_cleared >= 4:  # Tetris
+            reward = 800  # Reduced from 1200 - still excellent but not worth dying for
+        elif lines_cleared == 3:  # Triple
+            reward = 300
+        elif lines_cleared == 2:  # Double
+            reward = 200
+        elif lines_cleared == 1:  # Single
+            reward = 100
+        else:
+            reward = 10  # Small survival reward - successfully placing a piece is good!
         
-        # EXPONENTIAL line clear rewards - heavily favor tetrises
-        if lines_cleared == 1:
-            reward += 1       # Minimal - almost not worth it
-        elif lines_cleared == 2:
-            reward += 10      # Small reward
-        elif lines_cleared == 3:
-            reward += 50      # Moderate reward
-        elif lines_cleared == 4:
-            reward += 400     # MASSIVE tetris reward! (~40x single line)
+        # Height-based penalties: teach agent that high stacks are dangerous
+        # These are necessary because height directly affects immediate survival risk
         
-        # Height-based penalties: encourage clearing before danger
-        if max_height > 16:
-            reward -= 50      # Critical danger zone
-        elif max_height > 14:
-            reward -= 20      # Warning zone
-
+        
+        if max_height >= 14:
+            reward -= 500   # WARNING - getting risky
+        elif max_height >= 12:
+            reward -= 20   # CAUTION - starting to stack high
+        elif max_height >= 10:
+            reward -= 10   # Slight penalty at medium height
+        
         return reward
     
     @staticmethod
@@ -475,7 +476,7 @@ class TetrisEnv:
                 
                 # Build feature vector
                 feature_vector = np.array([
-                    features['smoothness'] / 100.0,
+                    features['smoothness'] / 100.0,         # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
                     features['lines_cleared'] / 4.0,       # 0-4 → 0-1
                     features['holes'] / 10.0,              # 0-10 → 0-1
                     features['min_height'] / 20.0,         # 0-20 → 0-1
@@ -660,7 +661,7 @@ if __name__ == "__main__":
 
             agent.policy_net.eval()
             with torch.no_grad():
-                q_values = agent.policy_net(features_batch).squeeze()
+                state_values = agent.policy_net(features_batch).squeeze()
             agent.policy_net.train()
 
             # Epsilon-greedy action selection (reference style)
@@ -668,7 +669,7 @@ if __name__ == "__main__":
             if u <= epsilon:
                 chosen_idx = random.randint(0, len(placements) - 1)
             else:
-                chosen_idx = torch.argmax(q_values).item()
+                chosen_idx = torch.argmax(state_values).item()
 
             chosen = placements[chosen_idx]
             next_state_features = feature_vectors[chosen_idx]
@@ -688,17 +689,43 @@ if __name__ == "__main__":
                 tetris_env.render()
                 cv2.waitKey(1)
             
-            # Extract max_height from the next state features (5th feature, denormalized)
+            # Extract max_height from next state features (denormalize for reward calculation)
             # Features: [smoothness/100, lines_cleared/4, holes/10, min_height/20, max_height/20]
-            max_height = next_state_features[4] * 20.0  # Denormalize from 0-1 to actual height
+            max_height = next_state_features[4] * 20.0  # Denormalize max_height
             
-            # Calculate reward with height penalty
+            # Calculate reward - holes and bumpiness affect the state features,
+            # so the agent learns their impact through Q-values, not direct penalties
             step_reward = tetris_env.shape_reward(lines_cleared_this_step, terminated, max_height)
             episode_reward_total += step_reward
             episode_lines_total += lines_cleared_this_step  # Accumulate lines cleared
             
-            # Store transition in replay memory
-            agent.remember(current_state_features, step_reward, next_state_features, terminated)
+            # Compute max Q-value for next state (for proper Q-learning)
+            if not terminated:
+                # Get all possible placements for the NEXT piece
+                next_tetro = tetris_env.env.unwrapped.active_tetromino
+                next_tetro_idx = next_tetro.id - 2
+                next_placements = tetris_env.get_all_board_states(next_tetro_idx, next_tetro)
+                
+                if next_placements:
+                    # Compute values for all next placements using target network
+                    next_feature_vectors = np.array([p["features"] for p in next_placements], dtype=np.float32)
+                    next_features_batch = torch.tensor(next_feature_vectors, dtype=torch.float32).to(device)
+                    
+                    agent.target_net.eval()
+                    with torch.no_grad():
+                        next_state_values_all = agent.target_net(next_features_batch).squeeze()
+                        max_next_q = torch.max(next_state_values_all).item()
+                    agent.target_net.train()
+                else:
+                    # No valid placements = terminal state
+                    max_next_q = 0.0
+                    terminated = True
+            else:
+                max_next_q = 0.0
+            
+            # Store transition in replay memory with max Q-value
+            
+            agent.remember(current_state_features, step_reward, max_next_q, terminated)
             
             # If episode ended, train and start new episode
             if terminated:
@@ -766,8 +793,8 @@ if __name__ == "__main__":
                 obs, info = tetris_env.reset()
                 current_state_features = tetris_env.get_current_state_features()
             else:
-                # Continue with next piece
-                current_state_features = next_state_features
+                # Continue with next piece - update current state to the actual board state
+                current_state_features = tetris_env.get_current_state_features()
 
     finally:
         agent.save(f"{CHECKPOINT_DIR}/tetris_dqn_latest.pth", epsilon, episode)

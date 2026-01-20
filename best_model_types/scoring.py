@@ -272,7 +272,7 @@ class TetrisEnv:
         # Extract features (don't clear lines for current state)
         features = self.extract_features(playable_board, clear_lines=False)
         feature_vector = np.array([
-            features['smoothness'] / 100.0,
+            features['smoothness'] / 100.0,     # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
             features['lines_cleared'] / 4.0,   # 0-4 → 0-1
             features['holes'] / 10.0,          # 0-10 → 0-1
             features['min_height'] / 20.0,     # 0-20 → 0-1
@@ -284,46 +284,49 @@ class TetrisEnv:
     @staticmethod
     def shape_reward(lines_cleared, terminated, max_height):
         """
-        Reward formula focused on tetrises with height-based penalty:
-        - Survival: +1 per step survived
-        - Line clears: scaled rewards (single=10, double=30, triple=50, tetris=200)
-        - Tetris bonus: Large reward for clearing 4 lines at once
-        - High stack penalty: -500 when max_height > 12 (dangerous zone)
-        - Game over: -500 (still penalize death)
+        Reward formula with height penalties to teach agent that high boards are dangerous:
+        - Tetris (4 lines): +1200 points (HUGE reward!)
+        - Triple (3 lines): +300 points
+        - Double (2 lines): +200 points
+        - Single (1 line):  +100 points
+        - No lines:         0 points
+        - Height penalties: Progressive penalties for dangerous heights
+        - Game over:        -300 penalty
         
-        This encourages the agent to:
-        1. Seek tetris opportunities (4-line clears)
-        2. Avoid letting the stack get too high (>12 blocks)
-        3. Clear lines before reaching dangerous heights
-        4. Balance risk vs reward more proactively
+        Height penalties encourage the agent to keep the board low and clear
+        lines proactively before reaching dangerous heights.
         
         Args:
             lines_cleared: Number of lines cleared this step (0-4)
             terminated: Whether the game ended
-            max_height: Maximum column height on the board
+            max_height: Maximum column height on the board (0-20)
         
         Returns:
             Reward score for this step
         """
         # Heavy penalty for game over
         if terminated:
-            return -200
+            return -300
         
-        # Base survival reward: small but keeps agent alive
-        reward = 0
+        # Base scoring system matching play_model.py
+        if lines_cleared >= 4:  # Tetris
+            reward = 1200  # Fixed tetris reward
+        elif lines_cleared > 0:  # Regular clear (1-3 lines)
+            reward = lines_cleared * 100
+        else:
+            reward = 0  # No reward for placing without clearing
         
-        # Height-based penalty: punish dangerous stack heights
-        # This teaches the agent to avoid risky situations BEFORE dying
-        # if max_height > 15:
-        #     reward -= 15  # Same penalty as death - this is dangerous!
+        # Height-based penalties: teach agent that high is dangerous!
+        # Progressive penalties encourage clearing before critical heights
+        if max_height >= 18:
+            reward -= 100  # CRITICAL - very close to death
+        elif max_height >= 16:
+            reward -= 50   # DANGER ZONE - clear lines now!
+        elif max_height >= 14:
+            reward -= 20   # WARNING - getting risky
+        elif max_height >= 12:
+            reward -= 5    # CAUTION - starting to stack high
         
-        # Line clear rewards with tetris emphasis
-        if lines_cleared == 4:
-            # TETRIS! Big reward
-            reward += 200
-        # else:
-        #     reward += lines_cleared * 10
-
         return reward
     
     @staticmethod
@@ -465,7 +468,7 @@ class TetrisEnv:
                 
                 # Build feature vector
                 feature_vector = np.array([
-                    features['smoothness'] / 100.0,
+                    features['smoothness'] / 100.0,         # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
                     features['lines_cleared'] / 4.0,       # 0-4 → 0-1
                     features['holes'] / 10.0,              # 0-10 → 0-1
                     features['min_height'] / 20.0,         # 0-20 → 0-1
@@ -678,7 +681,7 @@ if __name__ == "__main__":
                 tetris_env.render()
                 cv2.waitKey(1)
             
-            # Extract max_height from the next state features (5th feature, denormalized)
+            # Extract max_height from next state features (5th feature, denormalized)
             # Features: [smoothness/100, lines_cleared/4, holes/10, min_height/20, max_height/20]
             max_height = next_state_features[4] * 20.0  # Denormalize from 0-1 to actual height
             

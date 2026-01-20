@@ -33,16 +33,16 @@ MAX_BEST_MODELS = 10
 FEATURE_DIM = 5
 
 # ------------------------
-# Feature-Only DQN Network
+# VNN - Value Neural Network (Afterstate Learning)
 # ------------------------
-class DQN(nn.Module):
+class VNN(nn.Module):
     def __init__(self, feature_dim=5):
-        super(DQN, self).__init__()
+        super(VNN, self).__init__()
         
         # 5-feature network: feature_dim -> 64 -> 64 -> 1
-        self.conv1 = nn.Sequential(nn.Linear(feature_dim, 64), nn.ReLU(inplace=True))
-        self.conv2 = nn.Sequential(nn.Linear(64, 64), nn.ReLU(inplace=True))
-        self.conv3 = nn.Sequential(nn.Linear(64, 1))
+        self.fc1 = nn.Sequential(nn.Linear(feature_dim, 64), nn.ReLU(inplace=True))
+        self.fc2 = nn.Sequential(nn.Linear(64, 64), nn.ReLU(inplace=True))
+        self.fc3 = nn.Sequential(nn.Linear(64, 1))
         self._create_weights()
         # print(f"🔧 Network architecture: {feature_dim} -> 64 -> 64 -> 1")
 
@@ -54,9 +54,9 @@ class DQN(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, features):
-        x = self.conv1(features)
-        x = self.conv2(x) 
-        x = self.conv3(x)
+        x = self.fc1(features)
+        x = self.fc2(x) 
+        x = self.fc3(x)
         return x
 
 # ------------------------
@@ -80,8 +80,8 @@ class Agent:
         self.batch_size = batch_size
         
         # Create networks
-        self.policy_net = DQN(feature_dim).to(device)
-        self.target_net = DQN(feature_dim).to(device)
+        self.policy_net = VNN(feature_dim).to(device)
+        self.target_net = VNN(feature_dim).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
         # Optimizer and loss
@@ -91,9 +91,9 @@ class Agent:
         # Replay memory
         self.memory = deque(maxlen=memory_size)
     
-    def remember(self, features, reward, next_features, done):
-        """Store transition in replay memory"""
-        self.memory.append((features, reward, next_features, done))
+    def remember(self, features, reward, max_next_q, done):
+        """Store transition in replay memory with max Q-value of next state"""
+        self.memory.append((features, reward, max_next_q, done))
     
     def replay(self):
         """Train the network using a batch from replay memory"""
@@ -101,32 +101,26 @@ class Agent:
             return
         
         batch = random.sample(self.memory, self.batch_size)
-        features, rewards, next_features, dones = zip(*batch)
+        features, rewards, max_next_qs, dones = zip(*batch)
         
         features = torch.tensor(np.array(features), dtype=torch.float32).to(self.device)
-        next_features = torch.tensor(np.array(next_features), dtype=torch.float32).to(self.device)
         rewards = torch.tensor(np.array(rewards, dtype=np.float32), dtype=torch.float32).to(self.device)
+        max_next_qs = torch.tensor(np.array(max_next_qs, dtype=np.float32), dtype=torch.float32).to(self.device)
         
-        # Q-values for current states
-        q_values = self.policy_net(features).squeeze()
+        # State values for current states
+        state_values = self.policy_net(features).squeeze()
         
-        # Q-values for next states (using target network)
-        self.policy_net.eval()
-        with torch.no_grad():
-            next_q_values = self.target_net(next_features).squeeze()
-        self.policy_net.train()
-        
-        # Compute target Q-values
+        # Compute target values using stored max values
         y_batch = []
-        for reward, done, next_q in zip(rewards, dones, next_q_values):
+        for reward, done, max_next_q in zip(rewards, dones, max_next_qs):
             if done:
                 y_batch.append(reward)
             else:
-                y_batch.append(reward + self.gamma * next_q)
+                y_batch.append(reward + self.gamma * max_next_q)
         y_batch = torch.stack(y_batch).to(self.device)
         
         # Compute loss and update
-        loss = self.loss_fn(q_values, y_batch)
+        loss = self.loss_fn(state_values, y_batch)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -637,7 +631,7 @@ if __name__ == "__main__":
 
             agent.policy_net.eval()
             with torch.no_grad():
-                q_values = agent.policy_net(features_batch).squeeze()
+                state_values = agent.policy_net(features_batch).squeeze()
             agent.policy_net.train()
 
             # Epsilon-greedy action selection (reference style)
@@ -645,7 +639,7 @@ if __name__ == "__main__":
             if u <= epsilon:
                 chosen_idx = random.randint(0, len(placements) - 1)
             else:
-                chosen_idx = torch.argmax(q_values).item()
+                chosen_idx = torch.argmax(state_values).item()
 
             chosen = placements[chosen_idx]
             next_state_features = feature_vectors[chosen_idx]
@@ -670,8 +664,32 @@ if __name__ == "__main__":
             episode_reward_total += step_reward
             episode_lines_total += lines_cleared_this_step  # Accumulate lines cleared
             
-            # Store transition in replay memory
-            agent.remember(current_state_features, step_reward, next_state_features, terminated)
+            # Compute max Q-value for next state (for proper Q-learning)
+            if not terminated:
+                # Get all possible placements for the NEXT piece
+                next_tetro = tetris_env.env.unwrapped.active_tetromino
+                next_tetro_idx = next_tetro.id - 2
+                next_placements = tetris_env.get_all_board_states(next_tetro_idx, next_tetro)
+                
+                if next_placements:
+                    # Compute values for all next placements using target network
+                    next_feature_vectors = np.array([p["features"] for p in next_placements], dtype=np.float32)
+                    next_features_batch = torch.tensor(next_feature_vectors, dtype=torch.float32).to(device)
+                    
+                    agent.target_net.eval()
+                    with torch.no_grad():
+                        next_state_values_all = agent.target_net(next_features_batch).squeeze()
+                        max_next_q = torch.max(next_state_values_all).item()
+                    agent.target_net.train()
+                else:
+                    # No valid placements = terminal state
+                    max_next_q = 0.0
+                    terminated = True
+            else:
+                max_next_q = 0.0
+            
+            # Store transition in replay memory with max Q-value
+            agent.remember(current_state_features, step_reward, max_next_q, terminated)
             
             # If episode ended, train and start new episode
             if terminated:
@@ -739,8 +757,8 @@ if __name__ == "__main__":
                 obs, info = tetris_env.reset()
                 current_state_features = tetris_env.get_current_state_features()
             else:
-                # Continue with next piece
-                current_state_features = next_state_features
+                # Continue with next piece - update current state to the actual board state
+                current_state_features = tetris_env.get_current_state_features()
 
     finally:
         agent.save(f"{CHECKPOINT_DIR}/tetris_dqn_latest.pth", epsilon, episode)

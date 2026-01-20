@@ -10,7 +10,7 @@ import yaml
 
 from tetris_gymnasium.envs.tetris import Tetris
 from tetris_gymnasium.mappings.actions import ActionsMapping
-from tetris_dqn import DQN, Agent, TetrisEnv
+from tetris_dqn import VNN, Agent, TetrisEnv
 
 A = ActionsMapping()
 
@@ -22,7 +22,7 @@ print("🔧 Using 5-feature extraction (smoothness, complete_lines, holes, min_h
 # Command Line Arguments
 # ------------------------
 def parse_args():
-    parser = argparse.ArgumentParser(description='Play Tetris with trained DQN model')
+    parser = argparse.ArgumentParser(description='Play Tetris with trained VNN model')
     parser.add_argument('--model', type=str, choices=['best', 'latest', 'checkpoint', 'history', 'type', 'list'], default='best',
                        help='Choose model: "best" (best_model.pth - latest best), "latest" (latest checkpoint), "checkpoint" (specific checkpoint), "history" (from best_models folder), "type" (from best_model_types folder), "list" (list available models)')
     parser.add_argument('--path', type=str, 
@@ -200,7 +200,7 @@ tetris_env = TetrisEnv(render_mode="rgb_array")
 # ------------------------
 # Load trained model
 # ------------------------
-policy_net = DQN(feature_dim).to(device)
+policy_net = VNN(feature_dim).to(device)
 print(f"\n📂 Loading model from: {model_path}")
 checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
@@ -364,8 +364,8 @@ try:
                     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
                     cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3, cv2.LINE_AA)
                     
-                    cv2.imshow("Tetris DQN Play", frame)
-                    if cv2.waitKey(100) & 0xFF == ord('q'):
+                    cv2.imshow("Tetris VNN Play", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
                         terminated = True
                         break
             
