@@ -33,12 +33,12 @@ MAX_BEST_MODELS = 10
 FEATURE_DIM = 5
 
 # ------------------------
-# VNN - Value Neural Network (Afterstate Learning)
+# DQN - Deep Q-Network (Afterstate Learning)
 # ------------------------
-class VNN(nn.Module):
+class DQN(nn.Module):
     def __init__(self, feature_dim=5):
-        super(VNN, self).__init__()
-        
+        super(DQN, self).__init__()
+
         # 5-feature network: feature_dim -> 64 -> 64 -> 1
         self.fc1 = nn.Sequential(nn.Linear(feature_dim, 64), nn.ReLU(inplace=True))
         self.fc2 = nn.Sequential(nn.Linear(64, 64), nn.ReLU(inplace=True))
@@ -80,8 +80,8 @@ class Agent:
         self.batch_size = batch_size
         
         # Create networks
-        self.policy_net = VNN(feature_dim).to(device)
-        self.target_net = VNN(feature_dim).to(device)
+        self.policy_net = DQN(feature_dim).to(device)
+        self.target_net = DQN(feature_dim).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
         # Optimizer and loss

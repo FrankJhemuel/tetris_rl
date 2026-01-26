@@ -1,4 +1,3 @@
-import cv2
 import gymnasium as gym
 import numpy as np
 import random
@@ -33,18 +32,17 @@ MAX_BEST_MODELS = 10
 FEATURE_DIM = 5
 
 # ------------------------
-# VNN - Value Neural Network (Afterstate Learning)
+# DQN - Deep Q-Network
 # ------------------------
-class VNN(nn.Module):
+class DQN(nn.Module):
     def __init__(self, feature_dim=5):
-        super(VNN, self).__init__()
-        
+        super(DQN, self).__init__()
+
         # 5-feature network: feature_dim -> 64 -> 64 -> 1
         self.fc1 = nn.Sequential(nn.Linear(feature_dim, 64), nn.ReLU(inplace=True))
         self.fc2 = nn.Sequential(nn.Linear(64, 64), nn.ReLU(inplace=True))
         self.fc3 = nn.Sequential(nn.Linear(64, 1))
         self._create_weights()
-        # print(f"🔧 Network architecture: {feature_dim} -> 64 -> 64 -> 1")
 
     def _create_weights(self):
         """Xavier initialization"""
@@ -80,20 +78,21 @@ class Agent:
         self.batch_size = batch_size
         
         # Create networks
-        self.policy_net = VNN(feature_dim).to(device)
-        self.target_net = VNN(feature_dim).to(device)
+        self.policy_net = DQN(feature_dim).to(device)
+        self.target_net = DQN(feature_dim).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
         # Optimizer and loss
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.SmoothL1Loss()
         
         # Replay memory
         self.memory = deque(maxlen=memory_size)
     
-    def remember(self, features, reward, max_next_q, done):
-        """Store transition in replay memory with max Q-value of next state"""
-        self.memory.append((features, reward, max_next_q, done))
+    def remember(self, features, reward, next_features, done):
+        """Store transition in replay memory"""
+        self.memory.append((features, reward, next_features, done))
+
     
     def replay(self):
         """Train the network using a batch from replay memory"""
@@ -101,29 +100,29 @@ class Agent:
             return
         
         batch = random.sample(self.memory, self.batch_size)
-        features, rewards, max_next_qs, dones = zip(*batch)
-        
+        features, rewards, next_features, dones = zip(*batch)
+
         features = torch.tensor(np.array(features), dtype=torch.float32).to(self.device)
-        rewards = torch.tensor(np.array(rewards, dtype=np.float32), dtype=torch.float32).to(self.device)
-        max_next_qs = torch.tensor(np.array(max_next_qs, dtype=np.float32), dtype=torch.float32).to(self.device)
-        
-        # State values for current states
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
+        next_features = torch.tensor(np.array(next_features), dtype=torch.float32).to(self.device)
+        dones = torch.tensor(dones, dtype=torch.float32).to(self.device)
+
+        # Current state values
         state_values = self.policy_net(features).squeeze()
-        
-        # Compute target values using stored max values
-        y_batch = []
-        for reward, done, max_next_q in zip(rewards, dones, max_next_qs):
-            if done:
-                y_batch.append(reward)
-            else:
-                y_batch.append(reward + self.gamma * max_next_q)
-        y_batch = torch.stack(y_batch).to(self.device)
-        
-        # Compute loss and update
+
+        # Compute target Q-values for next states using target network
+        with torch.no_grad():
+            max_next_q_values = self.target_net(next_features).squeeze()
+
+        # Compute y = r + γ max_a' Q_target(s', a') for non-terminal states
+        y_batch = rewards + self.gamma * max_next_q_values * (1 - dones)
+
+        # Loss & update
         loss = self.loss_fn(state_values, y_batch)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
     
     def update_target_network(self):
         """Copy weights from policy network to target network"""
@@ -157,13 +156,13 @@ class TetrisEnv:
     # Offsets to convert trimmed-x → env-x
     # Format: piece_index : [offset_per_rotation]
     X_OFFSETS = {
-        0: [0, -2],         # I (horizontal, vertical)
-        1: [0],             # O
-        2: [0, -1, 0, 0],   # T
-        3: [0, -1],          # S
-        4: [0, -1],          # Z
-        5: [0, -1, 0, 0],   # J
-        6: [0, -1, 0, 0],   # L
+        0: [0, -2],             # I
+        1: [0],                 # O
+        2: [0, -1, 0, 0],       # T
+        3: [0, -1],             # S
+        4: [0, -1],             # Z
+        5: [0, -1, 0, 0],       # J
+        6: [0, -1, 0, 0],       # L
     }
     
     def __init__(self, render_mode=None):
@@ -191,77 +190,70 @@ class TetrisEnv:
     @staticmethod
     def extract_features(board_state, clear_lines=True):
         """
-        Extract 5 features for Tetris board evaluation:
-        1. Smoothness (bumpiness - sum of absolute height differences between adjacent columns)
-        2. Lines cleared (lines that can be cleared before clearing them)
-        3. Holes (empty cells below filled cells)
-        4. Min height (shortest column)
-        5. Max height (tallest column)
-        
+        Vectorized feature extraction for Tetris.
+
+        Features:
+        1. Smoothness (bumpiness)
+        2. Lines cleared
+        3. Holes
+        4. Min height
+        5. Max height
+
         Args:
             board_state: 2D numpy array representing the playable board
-            clear_lines: If True, simulate line clearing and return the cleared board
-        
+            clear_lines: Whether to simulate line clearing
+
         Returns:
-            dict with 5 feature values and optionally the cleared board
+            dict with features and optionally cleared board
         """
-        H, W = board_state.shape
-        
-        # Feature 2: Lines cleared (count BEFORE clearing)
-        lines_cleared = 0
-        rows_to_clear = []
-        for row in range(H):
-            if all(board_state[row, col] > 0 for col in range(W)):
-                lines_cleared += 1
-                rows_to_clear.append(row)
-        
-        # Simulate line clearing if requested
-        if clear_lines and rows_to_clear:
-            board_after_clear = np.delete(board_state, rows_to_clear, axis=0)
-            empty_rows = np.zeros((lines_cleared, W), dtype=board_state.dtype)
-            board_state = np.vstack([empty_rows, board_after_clear])
-        
-        # Calculate column heights (after clearing if applicable)
-        column_heights = []
-        for col in range(W):
-            column = board_state[:, col]
-            filled_rows = np.where(column > 0)[0]
-            if len(filled_rows) > 0:
-                height = H - filled_rows[0]  # Height from bottom
-                column_heights.append(height)
-            else:
-                column_heights.append(0)
-        
-        # Feature 1: Smoothness (bumpiness)
-        # Sum of absolute differences between adjacent column heights
-        smoothness = 0
-        for i in range(len(column_heights) - 1):
-            smoothness += abs(column_heights[i] - column_heights[i + 1])
-                
-        # Feature 3: Holes
-        holes = 0
-        for col in range(W):
-            column = board_state[:, col]
-            filled_rows = np.where(column > 0)[0]
-            if len(filled_rows) > 0:
-                for row in range(filled_rows[0] + 1, H):
-                    if column[row] == 0:
-                        holes += 1
-        
-        # Feature 4: Min height
-        min_height = min(column_heights) if column_heights else 0
-        
-        # Feature 5: Max height
-        max_height = max(column_heights) if column_heights else 0
-        
+        board = board_state.copy()
+        H, W = board.shape
+
+        # ----------------------
+        # 1️⃣ Lines cleared
+        # ----------------------
+        full_rows = np.all(board > 0, axis=1)
+        lines_cleared = np.sum(full_rows)
+
+        if clear_lines and lines_cleared > 0:
+            board = np.vstack([np.zeros((lines_cleared, W), dtype=board.dtype),
+                            board[~full_rows]])
+
+        # ----------------------
+        # 2️⃣ Column heights
+        # ----------------------
+        filled = board > 0
+        # For each column, find the first filled cell from the top
+        first_filled = np.argmax(filled, axis=0)
+        has_filled = np.any(filled, axis=0)
+        column_heights = np.where(has_filled, H - first_filled, 0)
+
+        # ----------------------
+        # 3️⃣ Smoothness (bumpiness)
+        # ----------------------
+        smoothness = np.sum(np.abs(np.diff(column_heights)))
+
+        # ----------------------
+        # 4️⃣ Holes
+        # ----------------------
+        # Cumulative sum from top; a hole is an empty cell below any filled cell
+        holes = np.sum(np.logical_and(np.cumsum(filled, axis=0) > 0, ~filled))
+
+        # ----------------------
+        # 5️⃣ Min/Max height
+        # ----------------------
+        min_height = np.min(column_heights)
+        max_height = np.max(column_heights)
+
         return {
             'smoothness': smoothness,
-            'lines_cleared': lines_cleared,  # Now returns lines_cleared instead of complete_lines
+            'lines_cleared': lines_cleared,
             'holes': holes,
             'min_height': min_height,
             'max_height': max_height,
-            'cleared_board': board_state  # Return the cleared board for use in get_all_board_states
+            'cleared_board': board
         }
+
     
     def get_current_state_features(self):
         """Get features for the current board state"""
@@ -273,10 +265,10 @@ class TetrisEnv:
         features = self.extract_features(playable_board, clear_lines=False)
         feature_vector = np.array([
             features['smoothness'] / 100.0,     # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
-            features['lines_cleared'] / 4.0,   # 0-4 → 0-1
-            features['holes'] / 10.0,          # 0-10 → 0-1
-            features['min_height'] / 20.0,     # 0-20 → 0-1
-            features['max_height'] / 20.0      # 0-20 → 0-1
+            features['lines_cleared'] / 4.0,    # 0-4 → 0-1
+            features['holes'] / 10.0,           # 0-10 → 0-1
+            features['min_height'] / 20.0,      # 0-20 → 0-1
+            features['max_height'] / 20.0       # 0-20 → 0-1
         ], dtype=np.float32)
         
         return feature_vector
@@ -326,14 +318,12 @@ class TetrisEnv:
         
         # Height-based penalties: teach agent that high stacks are dangerous
         # These are necessary because height directly affects immediate survival risk
-        
-        
-        if max_height >= 14:
-            reward -= 500   # WARNING - getting risky
+        if max_height >= 16:
+            reward -= 500
         elif max_height >= 12:
-            reward -= 20   # CAUTION - starting to stack high
+            reward -= 20   
         elif max_height >= 10:
-            reward -= 10   # Slight penalty at medium height
+            reward -= 10   
         
         return reward
     
@@ -395,9 +385,8 @@ class TetrisEnv:
     def compute_action_sequence(self, tetro_idx, tetro, target_rot_id, target_x):
         """Compute action sequence to place piece at target position and rotation"""
         actions = []
-        
-        # The piece always spawns at rotation 0, so target_rot_id directly tells us
-        # how many clockwise rotations to perform
+
+        # The piece always spawns at rotation 0, so target_rot_id directly tells us how many clockwise rotations to perform
         n_rot = target_rot_id
         actions += [A.rotate_counterclockwise] * n_rot
 
@@ -550,6 +539,72 @@ def save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode)
     plt.savefig(GRAPH_FILE)
     plt.close(fig)
 
+def evaluate_agent(agent, env, n_episodes=5, render=False):
+    """
+    Evaluate the agent over n_episodes and return the mean reward.
+    
+    Args:
+        agent: DQN agent
+        env: TetrisEnv instance
+        n_episodes: Number of episodes to average
+        render: If True, render the game
+    
+    Returns:
+        mean_reward: Average total reward over n_episodes
+        mean_lines: Average lines cleared
+    """
+    total_rewards = []
+    total_lines = []
+    
+    for ep in range(n_episodes):
+        obs, info = env.reset()
+        episode_reward = 0
+        episode_lines = 0
+        terminated = False
+
+        while not terminated:
+            # Get all possible placements
+            tetro = env.env.unwrapped.active_tetromino
+            tetro_idx = tetro.id - 2
+            placements = env.get_all_board_states(tetro_idx, tetro)
+            if not placements:
+                break
+
+            # Compute Q-values
+            feature_vectors = np.array([p["features"] for p in placements], dtype=np.float32)
+            features_batch = torch.tensor(feature_vectors, dtype=torch.float32).to(agent.device)
+            agent.policy_net.eval()
+            with torch.no_grad():
+                state_values = agent.policy_net(features_batch).squeeze()
+            agent.policy_net.train()
+
+            # Pick best action
+            chosen_idx = torch.argmax(state_values).item()
+            chosen = placements[chosen_idx]
+
+            # Execute action sequence
+            lines_cleared_this_step = 0
+            for a in chosen["actions"]:
+                obs, reward_step, terminated, truncated, info = env.step(a)
+                lines_cleared_this_step = info.get("lines_cleared", 0)
+                if terminated:
+                    break
+                if render:
+                    env.render()
+
+            # Reward calculation (same as during training)
+            max_height = chosen["features"][4] * 20.0
+            step_reward = env.shape_reward(lines_cleared_this_step, terminated, max_height)
+            episode_reward += step_reward
+            episode_lines += lines_cleared_this_step
+
+        total_rewards.append(episode_reward)
+        total_lines.append(episode_lines)
+
+    mean_reward = np.mean(total_rewards)
+    mean_lines = np.mean(total_lines)
+    return mean_reward, mean_lines
+
 # ------------------------
 # Main Training Loop
 # ------------------------
@@ -623,32 +678,36 @@ if __name__ == "__main__":
         print("No feature-based checkpoint found, starting from scratch")
     
     best_reward = -float("inf")
+    best_mean = -float("inf")
     best_lines = 0
     rewards_per_episode = []
     epsilon_history = []
     lines_per_episode = []
+    
 
     try:
         episode = 0
-        
+
         # Get initial state features
         obs, info = tetris_env.reset()
         current_state_features = tetris_env.get_current_state_features()
-        
+
         print(f"\n🚀 Starting training for {num_episodes} episodes...")
         print(f"💾 Checkpoints will be saved every {save_interval} episodes\n")
-        
+
         pieces_placed = 0
         episode_pieces = 0
-        episode_reward_total = 0  # Track cumulative reward per episode
-        episode_lines_total = 0  # Track total lines cleared per episode
+        episode_reward_total = 0
+        episode_lines_total = 0
+        
+        
 
         while episode < num_episodes:
-            # Get all possible next states (like reference implementation)
+            # Get all possible next states
             tetro = tetris_env.env.unwrapped.active_tetromino
             tetro_idx = tetro.id - 2
             placements = tetris_env.get_all_board_states(tetro_idx, tetro)
-            
+
             if not placements:
                 # Can't place piece - game over
                 obs, info = tetris_env.reset()
@@ -664,20 +723,18 @@ if __name__ == "__main__":
                 state_values = agent.policy_net(features_batch).squeeze()
             agent.policy_net.train()
 
-            # Epsilon-greedy action selection (reference style)
-            u = random.random()
-            if u <= epsilon:
+            # Epsilon-greedy action selection
+            if random.random() <= epsilon:
                 chosen_idx = random.randint(0, len(placements) - 1)
             else:
                 chosen_idx = torch.argmax(state_values).item()
 
             chosen = placements[chosen_idx]
-            next_state_features = feature_vectors[chosen_idx]
-            
+
             # Track pieces placed
             pieces_placed += 1
             episode_pieces += 1
-            
+
             # Execute the action sequence
             lines_cleared_this_step = 0
             terminated = False
@@ -686,62 +743,42 @@ if __name__ == "__main__":
                     break
                 obs, reward_step, terminated, truncated, info = tetris_env.step(a)
                 lines_cleared_this_step = info.get("lines_cleared", 0)
-                tetris_env.render()
-                cv2.waitKey(1)
-            
-            # Extract max_height from next state features (denormalize for reward calculation)
-            # Features: [smoothness/100, lines_cleared/4, holes/10, min_height/20, max_height/20]
-            max_height = next_state_features[4] * 20.0  # Denormalize max_height
-            
-            # Calculate reward - holes and bumpiness affect the state features,
-            # so the agent learns their impact through Q-values, not direct penalties
+
+            # Denormalize max_height for reward
+            max_height = feature_vectors[chosen_idx][4] * 20.0
+
+            # Calculate reward
             step_reward = tetris_env.shape_reward(lines_cleared_this_step, terminated, max_height)
             episode_reward_total += step_reward
-            episode_lines_total += lines_cleared_this_step  # Accumulate lines cleared
-            
-            # Compute max Q-value for next state (for proper Q-learning)
+            episode_lines_total += lines_cleared_this_step
+
+            # Get next state features
             if not terminated:
-                # Get all possible placements for the NEXT piece
-                next_tetro = tetris_env.env.unwrapped.active_tetromino
-                next_tetro_idx = next_tetro.id - 2
-                next_placements = tetris_env.get_all_board_states(next_tetro_idx, next_tetro)
-                
-                if next_placements:
-                    # Compute values for all next placements using target network
-                    next_feature_vectors = np.array([p["features"] for p in next_placements], dtype=np.float32)
-                    next_features_batch = torch.tensor(next_feature_vectors, dtype=torch.float32).to(device)
-                    
-                    agent.target_net.eval()
-                    with torch.no_grad():
-                        next_state_values_all = agent.target_net(next_features_batch).squeeze()
-                        max_next_q = torch.max(next_state_values_all).item()
-                    agent.target_net.train()
-                else:
-                    # No valid placements = terminal state
-                    max_next_q = 0.0
-                    terminated = True
+                next_state_features = tetris_env.get_current_state_features()
             else:
-                max_next_q = 0.0
-            
-            # Store transition in replay memory with max Q-value
-            
-            agent.remember(current_state_features, step_reward, max_next_q, terminated)
-            
-            # If episode ended, train and start new episode
+                next_state_features = current_state_features  # just keep current; TD target ignores done
+
+            # Store transition in replay memory
+            agent.remember(current_state_features, step_reward, next_state_features, terminated)
+
+            # Update current state
+            current_state_features = next_state_features
+        
+            # End of episode processing
             if terminated:
                 episode += 1
-                
-                # Exponential epsilon decay (once per episode)
+
+                # Exponential epsilon decay
                 epsilon = max(epsilon_min, epsilon * epsilon_decay)
-                
-                # Train if we have enough samples
+
+                # Train if enough samples
                 if len(agent.memory) >= batch_size:
                     agent.replay()
                 
                 # Target network update
                 if episode % target_update_freq == 0:
                     agent.update_target_network()
-                
+
                 # Checkpoint saving
                 if episode % save_interval == 0:
                     checkpoint_path = f"{CHECKPOINT_DIR}/tetris_dqn_ep{episode}.pth"
@@ -752,26 +789,30 @@ if __name__ == "__main__":
                 
                 # Save best model based on total episode reward
                 if episode_reward_total > best_reward:
-                    best_reward = episode_reward_total
-                    
-                    # Save to best_models history folder
-                    best_model_history_path = f"{BEST_MODELS_DIR}/best_model_ep{episode}_reward{episode_reward_total:.0f}.pth"
-                    agent.save(best_model_history_path, epsilon, episode, episode_reward_total)
-                    
-                    # Clean up old best models (keep only last MAX_BEST_MODELS)
-                    cleanup_checkpoints(BEST_MODELS_DIR, MAX_BEST_MODELS)
-                    
-                    # Also save as the main best_model.pth (most accessible for play_model)
-                    agent.save("best_model.pth", epsilon, episode, episode_reward_total)
-                    print(f"💎 Saved new best model at Episode {episode} (Reward: {episode_reward_total:.2f})")
-                    print(f"   📜 History saved to: {best_model_history_path}")
+                    mean_reward, mean_lines = evaluate_agent(agent, tetris_env, n_episodes=3)
+
+                    if mean_reward > best_mean:
+                        best_mean = mean_reward
+                        best_reward = episode_reward_total
+                        
+                        # Save to best_models history folder
+                        best_model_history_path = f"{BEST_MODELS_DIR}/best_model_ep{episode}_reward{episode_reward_total:.0f}.pth"
+                        agent.save(best_model_history_path, epsilon, episode, episode_reward_total)
+                        
+                        # Clean up old best models (keep only last MAX_BEST_MODELS)
+                        cleanup_checkpoints(BEST_MODELS_DIR, MAX_BEST_MODELS)
+                        
+                        # Also save as the main best_model.pth (most accessible for play_model)
+                        agent.save("best_model.pth", epsilon, episode, episode_reward_total)
+                        print(f"💎 Saved new best model at Episode {episode} (Reward: {episode_reward_total:.2f})")
+                        print(f"   📜 History saved to: {best_model_history_path}")
                 
                 # Logging
                 rewards_per_episode.append(episode_reward_total)
                 epsilon_history.append(epsilon)
-                lines_per_episode.append(episode_lines_total)  # Total lines cleared in episode
-                
-                # Per-episode diagnostics with Q-value monitoring
+                lines_per_episode.append(episode_lines_total)
+
+                # Q-value diagnostics
                 if len(agent.memory) >= batch_size:
                     sample_batch = random.sample(agent.memory, min(100, len(agent.memory)))
                     sample_features = torch.tensor(np.array([s[0] for s in sample_batch]), dtype=torch.float32).to(device)
@@ -783,17 +824,13 @@ if __name__ == "__main__":
                     print(f"Episode {episode}: {episode_pieces} pieces, reward={episode_reward_total:.1f}, ε={epsilon:.3f} | Q: avg={avg_q:.1f}, max={max_q:.1f}, min={min_q:.1f}, mem={len(agent.memory)}")
                 else:
                     print(f"Episode {episode}: {episode_pieces} pieces, reward={episode_reward_total:.1f}, ε={epsilon:.3f}, mem={len(agent.memory)}/{batch_size} (warmup)")
-                
-                # Reset episode tracking variables
+
+                # Reset episode tracking
                 episode_pieces = 0
                 episode_reward_total = 0
-                episode_lines_total = 0  # Reset lines counter
-                
-                # Reset environment
+                episode_lines_total = 0
+
                 obs, info = tetris_env.reset()
-                current_state_features = tetris_env.get_current_state_features()
-            else:
-                # Continue with next piece - update current state to the actual board state
                 current_state_features = tetris_env.get_current_state_features()
 
     finally:

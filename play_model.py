@@ -1,16 +1,12 @@
-import gymnasium as gym
 import torch
 import cv2
 import numpy as np
-import random
 import argparse
 import os
 import glob
-import yaml
 
-from tetris_gymnasium.envs.tetris import Tetris
 from tetris_gymnasium.mappings.actions import ActionsMapping
-from tetris_dqn import VNN, Agent, TetrisEnv
+from tetris_dqn import DQN, TetrisEnv
 
 A = ActionsMapping()
 
@@ -200,7 +196,7 @@ tetris_env = TetrisEnv(render_mode="rgb_array")
 # ------------------------
 # Load trained model
 # ------------------------
-policy_net = VNN(feature_dim).to(device)
+policy_net = DQN(feature_dim).to(device)
 print(f"\n📂 Loading model from: {model_path}")
 checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
@@ -364,7 +360,7 @@ try:
                     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)[0]
                     cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3, cv2.LINE_AA)
                     
-                    cv2.imshow("Tetris VNN Play", frame)
+                    cv2.imshow("Tetris DQN Play", frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         terminated = True
                         break

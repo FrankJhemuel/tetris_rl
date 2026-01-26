@@ -33,12 +33,12 @@ MAX_BEST_MODELS = 10
 FEATURE_DIM = 5
 
 # ------------------------
-# VNN - Value Neural Network (Afterstate Learning)
+# DQN - Deep Q-Network (Afterstate Learning)
 # ------------------------
-class VNN(nn.Module):
+class DQN(nn.Module):
     def __init__(self, feature_dim=5):
-        super(VNN, self).__init__()
-        
+        super(DQN, self).__init__()
+
         # 5-feature network: feature_dim -> 64 -> 64 -> 1
         self.fc1 = nn.Sequential(nn.Linear(feature_dim, 64), nn.ReLU(inplace=True))
         self.fc2 = nn.Sequential(nn.Linear(64, 64), nn.ReLU(inplace=True))
@@ -80,8 +80,8 @@ class Agent:
         self.batch_size = batch_size
         
         # Create networks
-        self.policy_net = VNN(feature_dim).to(device)
-        self.target_net = VNN(feature_dim).to(device)
+        self.policy_net = DQN(feature_dim).to(device)
+        self.target_net = DQN(feature_dim).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
         # Optimizer and loss
@@ -282,16 +282,18 @@ class TetrisEnv:
         return feature_vector
     
     @staticmethod
-    def shape_reward(lines_cleared, terminated):
+    def shape_reward(lines_cleared, terminated, max_height):
         """
         Reward formula focused on survival:
         - Survival: +10 per step survived
         - Game over: -200
-        
+        - Height penalty: -1 per row above max_height
+
         Args:
             lines_cleared: Number of lines cleared this step
             terminated: Whether the game ended
-        
+            max_height: Maximum height of the board
+
         Returns:
             Reward score for this step
         """
@@ -300,6 +302,17 @@ class TetrisEnv:
         
         # Survival reward: encourage staying alive
         reward = 10
+        
+        # Height-based penalties: teach agent that high is dangerous!
+        # Progressive penalties encourage clearing before critical heights
+        if max_height >= 18:
+            reward -= 100  # CRITICAL - very close to death
+        elif max_height >= 16:
+            reward -= 50   # DANGER ZONE - clear lines now!
+        elif max_height >= 14:
+            reward -= 20   # WARNING - getting risky
+        elif max_height >= 12:
+            reward -= 5    # CAUTION - starting to stack high
         
         # Line clear reward (no special tetris bonus)
         # if lines_cleared > 0:
@@ -659,8 +672,12 @@ if __name__ == "__main__":
                 tetris_env.render()
                 cv2.waitKey(1)
             
+            # Extract max_height from next state features (5th feature, denormalized)
+            # Features: [smoothness/100, lines_cleared/4, holes/10, min_height/20, max_height/20]
+            max_height = next_state_features[4] * 20.0  # Denormalize from 0-1 to actual height
+            
             # Calculate reward
-            step_reward = tetris_env.shape_reward(lines_cleared_this_step, terminated)
+            step_reward = tetris_env.shape_reward(lines_cleared_this_step, terminated, max_height)
             episode_reward_total += step_reward
             episode_lines_total += lines_cleared_this_step  # Accumulate lines cleared
             
