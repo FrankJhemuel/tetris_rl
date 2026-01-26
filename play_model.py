@@ -361,7 +361,7 @@ try:
                     cv2.putText(frame, text, (frame_width - text_size[0] - 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3, cv2.LINE_AA)
                     
                     cv2.imshow("Tetris DQN Play", frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                    if cv2.waitKey(100) & 0xFF == ord('q'):
                         terminated = True
                         break
             

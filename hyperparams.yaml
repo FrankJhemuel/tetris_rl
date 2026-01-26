@@ -1,11 +1,12 @@
-# Hyperparameters for DQN training (optimized for line-clearing reward)
-gamma: 0.99                   # Discount factor
-initial_epsilon: 1.0          # Starting exploration rate
-final_epsilon: 0.01           # Minimum exploration rate (1% for better exploitation)
-epsilon_decay: 0.9985       # Exponential decay rate per episode (reaches 0.01 at ~2600 episodes)
-lr: 0.0005                    # Learning rate (increased to escape local maxima faster)
-batch_size: 64                # Batch size for training (larger batches for stability)
-memory_size: 30000            # Replay memory size (increased for more diverse experiences)
-target_update_freq: 50        # How often to update target network (less frequent for stability)
-num_episodes: 3000            # Total number of episodes (reduced for faster iteration)
-save_interval: 100            # Save checkpoint every N episodes
+initial_epsilon: 1.0
+final_epsilon: 0.01
+epsilon_decay: 0.99816  
+
+lr: 0.0003              
+batch_size: 64
+memory_size: 50000
+target_update_freq: 100
+
+num_episodes: 3000
+save_interval: 100
+gamma: 0.99

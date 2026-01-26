@@ -204,13 +204,13 @@ class TetrisEnv:
             clear_lines: Whether to simulate line clearing
 
         Returns:
-            dict with features and optionally cleared board
+            dict with features and cleared board
         """
         board = board_state.copy()
         H, W = board.shape
 
         # ----------------------
-        # 1️⃣ Lines cleared
+        # Lines cleared
         # ----------------------
         full_rows = np.all(board > 0, axis=1)
         lines_cleared = np.sum(full_rows)
@@ -220,7 +220,7 @@ class TetrisEnv:
                             board[~full_rows]])
 
         # ----------------------
-        # 2️⃣ Column heights
+        # Column heights
         # ----------------------
         filled = board > 0
         # For each column, find the first filled cell from the top
@@ -229,18 +229,18 @@ class TetrisEnv:
         column_heights = np.where(has_filled, H - first_filled, 0)
 
         # ----------------------
-        # 3️⃣ Smoothness (bumpiness)
+        # Smoothness (bumpiness)
         # ----------------------
         smoothness = np.sum(np.abs(np.diff(column_heights)))
 
         # ----------------------
-        # 4️⃣ Holes
+        # Holes
         # ----------------------
         # Cumulative sum from top; a hole is an empty cell below any filled cell
         holes = np.sum(np.logical_and(np.cumsum(filled, axis=0) > 0, ~filled))
 
         # ----------------------
-        # 5️⃣ Min/Max height
+        # Min/Max height
         # ----------------------
         min_height = np.min(column_heights)
         max_height = np.max(column_heights)
@@ -277,10 +277,10 @@ class TetrisEnv:
     def shape_reward(lines_cleared, terminated, max_height):
         """
         Reward formula focused on line clearing and survival:
-        - Tetris (4 lines): +800 points (good reward, but not excessive)
-        - Triple (3 lines): +300 points
-        - Double (2 lines): +200 points
-        - Single (1 line):  +100 points
+        - Tetris (4 lines): +100 points (good reward, but not excessive)
+        - Triple (3 lines): +60 points
+        - Double (2 lines): +40 points
+        - Single (1 line):  +20 points
         - No lines:         +10 points (survival reward - staying alive is good!)
         - Height penalties: Progressive penalties for dangerous heights
         - Game over:        -500 penalty (strong deterrent)
@@ -302,19 +302,19 @@ class TetrisEnv:
         """
         # Heavy penalty for game over - this is the main teaching signal
         if terminated:
-            return -500  # Increased from -300 to strongly discourage risky play
+            return -500  
         
         # Base scoring system - reduced Tetris reward to balance risk/reward
-        if lines_cleared >= 4:  # Tetris
-            reward = 800  # Reduced from 1200 - still excellent but not worth dying for
-        elif lines_cleared == 3:  # Triple
-            reward = 300
-        elif lines_cleared == 2:  # Double
-            reward = 200
-        elif lines_cleared == 1:  # Single
-            reward = 100
+        if lines_cleared >= 4:  
+            reward = 100  
+        elif lines_cleared == 3:  
+            reward = 60
+        elif lines_cleared == 2:  
+            reward = 40
+        elif lines_cleared == 1:  
+            reward = 20
         else:
-            reward = 10  # Small survival reward - successfully placing a piece is good!
+            reward = 10 
         
         # Height-based penalties: teach agent that high stacks are dangerous
         # These are necessary because height directly affects immediate survival risk
@@ -386,7 +386,7 @@ class TetrisEnv:
         """Compute action sequence to place piece at target position and rotation"""
         actions = []
 
-        # The piece always spawns at rotation 0, so target_rot_id directly tells us how many clockwise rotations to perform
+        # The piece always spawns at rotation 0, so target_rot_id directly tells how many counter-clockwise rotations to perform
         n_rot = target_rot_id
         actions += [A.rotate_counterclockwise] * n_rot
 
@@ -410,7 +410,7 @@ class TetrisEnv:
         board = self.env.unwrapped.board.copy()
         H, W = board.shape
         
-        # CRITICAL FIX: Clear any full lines in the board snapshot FIRST
+        # Clear any full lines in the board snapshot FIRST
         # The environment may not have cleared lines from the previous piece yet
         playable_snapshot = board[:H-4, 4:W-4]
         rows_to_clear = []
@@ -466,10 +466,10 @@ class TetrisEnv:
                 # Build feature vector
                 feature_vector = np.array([
                     features['smoothness'] / 100.0,         # Bumpiness: 9 pairs * ~10 avg diff = 90 typical max
-                    features['lines_cleared'] / 4.0,       # 0-4 → 0-1
-                    features['holes'] / 10.0,              # 0-10 → 0-1
-                    features['min_height'] / 20.0,         # 0-20 → 0-1
-                    features['max_height'] / 20.0          # 0-20 → 0-1
+                    features['lines_cleared'] / 4.0,        # 0-4 → 0-1
+                    features['holes'] / 10.0,               # 0-10 → 0-1
+                    features['min_height'] / 20.0,          # 0-20 → 0-1
+                    features['max_height'] / 20.0           # 0-20 → 0-1
                 ], dtype=np.float32)
                 
                 actions = self.compute_action_sequence(
@@ -482,7 +482,7 @@ class TetrisEnv:
                     "rotation": rot_id,
                     "x": x,
                     "y": y,
-                    "features": feature_vector,  # Now returns feature vector instead of board
+                    "features": feature_vector,
                     "actions": actions,
                     "board": playable_board  # For debugging
                 })
@@ -539,7 +539,7 @@ def save_training_graph(rewards_per_episode, epsilon_history, lines_per_episode)
     plt.savefig(GRAPH_FILE)
     plt.close(fig)
 
-def evaluate_agent(agent, env, n_episodes=5, render=False):
+def evaluate_agent(agent, env, n_episodes=5):
     """
     Evaluate the agent over n_episodes and return the mean reward.
     
@@ -547,8 +547,6 @@ def evaluate_agent(agent, env, n_episodes=5, render=False):
         agent: DQN agent
         env: TetrisEnv instance
         n_episodes: Number of episodes to average
-        render: If True, render the game
-    
     Returns:
         mean_reward: Average total reward over n_episodes
         mean_lines: Average lines cleared
@@ -589,8 +587,6 @@ def evaluate_agent(agent, env, n_episodes=5, render=False):
                 lines_cleared_this_step = info.get("lines_cleared", 0)
                 if terminated:
                     break
-                if render:
-                    env.render()
 
             # Reward calculation (same as during training)
             max_height = chosen["features"][4] * 20.0
@@ -666,12 +662,12 @@ if __name__ == "__main__":
     )
 
     # Load checkpoint if it exists
-    RESUME_CHECKPOINT = "best_model_features__.pth"  # Feature-based model saved by reward
+    RESUME_CHECKPOINT = "best_model__.pth" # Currently does not point to a valid file, change to best_model.pth or any checkpoints
     start_episode = 0
     if os.path.exists(RESUME_CHECKPOINT):
         print(f"Loading checkpoint: {RESUME_CHECKPOINT}")
         checkpoint = agent.load(RESUME_CHECKPOINT)
-        epsilon = checkpoint.get("epsilon", epsilon)  # Resume from saved epsilon
+        epsilon = checkpoint.get("epsilon", epsilon) 
         start_episode = checkpoint.get("episode", 0)
         print(f"Resumed from episode {start_episode}, epsilon={epsilon:.4f}")
     else:
@@ -789,20 +785,21 @@ if __name__ == "__main__":
                 
                 # Save best model based on total episode reward
                 if episode_reward_total > best_reward:
+                    best_reward = episode_reward_total
+                    
                     mean_reward, mean_lines = evaluate_agent(agent, tetris_env, n_episodes=3)
-
+                    
+                    # Save to best_models history folder
+                    best_model_history_path = f"{BEST_MODELS_DIR}/best_model_ep{episode}_reward{episode_reward_total:.0f}.pth"
+                    agent.save(best_model_history_path, epsilon, episode, episode_reward_total)
+                    
+                    # Clean up old best models (keep only last MAX_BEST_MODELS)
+                    cleanup_checkpoints(BEST_MODELS_DIR, MAX_BEST_MODELS)
+                    
                     if mean_reward > best_mean:
                         best_mean = mean_reward
-                        best_reward = episode_reward_total
                         
-                        # Save to best_models history folder
-                        best_model_history_path = f"{BEST_MODELS_DIR}/best_model_ep{episode}_reward{episode_reward_total:.0f}.pth"
-                        agent.save(best_model_history_path, epsilon, episode, episode_reward_total)
-                        
-                        # Clean up old best models (keep only last MAX_BEST_MODELS)
-                        cleanup_checkpoints(BEST_MODELS_DIR, MAX_BEST_MODELS)
-                        
-                        # Also save as the main best_model.pth (most accessible for play_model)
+                        # Save as the main best_model.pth (most accessible for play_model)
                         agent.save("best_model.pth", epsilon, episode, episode_reward_total)
                         print(f"💎 Saved new best model at Episode {episode} (Reward: {episode_reward_total:.2f})")
                         print(f"   📜 History saved to: {best_model_history_path}")
